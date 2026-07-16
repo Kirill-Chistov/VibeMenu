@@ -1,0 +1,45 @@
+# Swift Package Manager / build output
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode (.app wrapper target)
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+.derivedData/
+*.xcuserstate
+*.xcarchive
+*.dSYM
+*.log
+
+# Profiling / coverage artifacts
+*.profraw
+*.profdata
+*.trace
+
+# Release packaging output (scripts/package-github-release.sh)
+build/
+dist/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Local agent tool state (not part of the project)
+.chatgpt/
+.claude/settings.local.json
+
+# Secrets & signing material — never commit (see SECURITY.md)
+*.p12
+*.cer
+*.mobileprovision
+*.provisionprofile
+*.p8
+.env
+.env.*
+secrets/
+
+# Local agent fixtures containing REAL data (only synthetic fixtures may be committed)
+Fixtures/real/
+*.real.jsonl

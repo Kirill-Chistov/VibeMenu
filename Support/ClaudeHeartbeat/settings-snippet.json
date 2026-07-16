@@ -1,0 +1,81 @@
+{
+  "//": "VibeMenu Claude heartbeat — SAMPLE hook block for ~/.claude/settings.json.",
+  "//1": "Do NOT copy this file over your settings.json. Merge the 'hooks' block below",
+  "//2": "into your existing settings (see Support/ClaudeHeartbeat/README.md).",
+  "//3": "Replace /ABSOLUTE/PATH/TO with the real absolute path to vibemenu-claude-hook.sh.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "'/ABSOLUTE/PATH/TO/vibemenu-claude-hook.sh'" }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "'/ABSOLUTE/PATH/TO/vibemenu-claude-hook.sh'" }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "'/ABSOLUTE/PATH/TO/vibemenu-claude-hook.sh'" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "'/ABSOLUTE/PATH/TO/vibemenu-claude-hook.sh'" }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "'/ABSOLUTE/PATH/TO/vibemenu-claude-hook.sh'" }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "'/ABSOLUTE/PATH/TO/vibemenu-claude-hook.sh'" }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          { "type": "command", "command": "'/ABSOLUTE/PATH/TO/vibemenu-claude-hook.sh'" }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "'/ABSOLUTE/PATH/TO/vibemenu-claude-hook.sh'" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "'/ABSOLUTE/PATH/TO/vibemenu-claude-hook.sh'" }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "'/ABSOLUTE/PATH/TO/vibemenu-claude-hook.sh'" }
+        ]
+      }
+    ]
+  }
+}
