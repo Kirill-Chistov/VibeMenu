@@ -71,6 +71,27 @@ struct ClaudeSessionDeriveTests {
         #expect(derive(.stop, age: 5000, process: true) == .done)
     }
 
+    /// **The `StopFailure` fix (docs/decisions/0019) — the reported "finished but stuck on Quiet"
+    /// bug.** A turn that ends on an API error fires `StopFailure` and, crucially, **not** `Stop`.
+    /// Treated as a finish, it derives `.done` at any age with a live process — so an errored-out
+    /// session reads **Done** immediately instead of sitting on **Quiet** (`.quietWorking`) until it
+    /// ages out to `.stale` ~15 minutes later. With no process it degrades `.done` (fresh) / `.stale`
+    /// (old), exactly like `Stop`. It never derives a work-holding state.
+    @Test func stopFailureIsDoneNotStuckOnQuiet() {
+        for age in [TimeInterval(1), 60, 121, 300, 900, 901, 5000] {
+            #expect(derive(.stopFailure, age: age, process: true) == .done, "stopFailure age=\(age)")
+        }
+        // The bug, and the fix, side by side on the SAME 300s timeline: the last *work* event that a
+        // StopFailure-blind session would keep showing reads `.quietWorking` ("Quiet") and still
+        // holds; the `StopFailure` finish ends it.
+        #expect(derive(.postToolUse, age: 300, process: true) == .quietWorking)   // stuck-Quiet (before)
+        #expect(derive(.stopFailure, age: 300, process: true) == .done)           // finished (after)
+        #expect(!derive(.stopFailure, age: 300, process: true).holdsSleepPrevention)
+        // No process: parity with Stop — fresh ⇒ done, old ⇒ stale.
+        #expect(derive(.stopFailure, age: 2, process: false) == .done)
+        #expect(derive(.stopFailure, age: 121, process: false) == .stale)
+    }
+
     /// No visible process: a heartbeat isn't proof of life. Fresh ⇒ `.done` (finished/idle;
     /// process detection can miss a node-hosted / just-exited CLI); older ⇒ `.stale`. Never a
     /// high-priority state without a process.
@@ -815,6 +836,8 @@ struct SessionAggregateEquivalenceTests {
         check([rec(.preToolUse, age: 1800)], process: true, "active at prune boundary")
         check([rec(.preToolUse, age: 1801)], process: true, "active past prune")
         check([rec(.stop, age: 1)], process: true, "stop")
+        check([rec(.stopFailure, age: 1)], process: true, "stop failure")
+        check([rec(.stopFailure, age: 300)], process: true, "aged stop failure")
         check([rec(.notification, age: 1)], process: true, "notification")
         check([rec(.sessionStart, age: 1)], process: true, "session start")
         check([rec(.sessionEnd, age: 1)], process: true, "session end")
@@ -834,6 +857,8 @@ struct SessionAggregateEquivalenceTests {
               process: true, "two done ⇒ release")
         check([rec(.sessionEnd, age: 1, session: "a"), rec(.subagentStop, age: 2, session: "b")],
               process: true, "ended + working subagent ⇒ hold")
+        check([rec(.stopFailure, age: 1, session: "a"), rec(.preToolUse, age: 1, session: "b")],
+              process: true, "errored turn + working ⇒ hold")
         check([rec(.preToolUse, age: 30, session: "a"), rec(.stop, age: 1, session: "a")],
               process: true, "dedup newest stop ⇒ release")
         check([rec(.preToolUse, age: 300, session: "a"), rec(.stop, age: 1, session: "b")],

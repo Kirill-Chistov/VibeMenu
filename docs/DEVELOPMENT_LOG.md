@@ -3760,3 +3760,69 @@ source rather than observed on screen.
 fresh screenshot → commit → make the repo public → publish v0.2 here. A full Git-history/privacy
 audit remains outstanding and is **not** covered by this pass — history was not rewritten, so past
 commits may still contain the removed clutter and absolute paths.
+
+## 2026-07-16 — Recognise `StopFailure`: fix finished Claude sessions stuck on "Quiet" (ADR 0019)
+
+**Task/session:** fix Claude sessions that have finished but stay displayed as **Quiet**. Hypothesis
+(from the owner): Claude Code fires `StopFailure` — not `Stop` — when a turn ends on an API error, and
+VibeMenu didn't recognise it. Verify against source + the official hook lifecycle, then make the
+narrowest fix. See [`decisions/0019-stopfailure-heartbeat.md`](decisions/0019-stopfailure-heartbeat.md).
+
+**Root cause (traced in source, not guessed).** `ClaudeSessionState.derive` reads **Done** only when
+the newest heartbeat event is a non-work finish (`Stop`/`Notification`/`SessionStart`/`SessionEnd`),
+and **Quiet** (`.quietWorking`) when the newest event *is* work-in-progress and has aged past the 120s
+window but is within the 15-min quiet-hold cap. So a session finishes but stays Quiet **iff its turn
+ended with no finish event overwriting the last work event.** On an API error that is exactly what
+happens: `StopFailure` fires and `Stop` does **not**. VibeMenu mapped `"StopFailure"` → `.unknown`,
+and `.unknown` `indicatesWorkInProgress` (0010 holds for unknown/future events on purpose), so an
+errored-out session (1) read **Quiet** for up to ~15 min then went `.stale`, and (2) kept **holding**
+automatic sleep prevention after the turn had ended. Normal `Stop` completions were never affected —
+verified: `derive(.stop,…) == .done`, and the sample hook already wires `Stop`. This is a missing
+*recognised finish event*, not a timing problem, so **no** silence heuristic / shortened timeout was
+introduced (that would regress the 0010 quiet-work hold, which the constraints protect).
+
+**External fact verified.** Consulted the official Claude Code hooks reference
+(`code.claude.com/docs/en/hooks.md`) via a `claude-code-guide` subagent: `StopFailure` is a real event,
+top-level `hook_event_name == "StopFailure"`, it fires when a turn ends on an API error, **`Stop` does
+not fire** on that path, and a matcher of `"*"`/`""`/omitted matches all error types.
+
+**Fix (narrow, additive; classified exactly like `Stop`).**
+- `Sources/VibeMenuCore/ClaudeHeartbeat.swift`: add `ClaudeHeartbeatEvent.stopFailure`; map
+  `"StopFailure"`; `isWaitingEvent == true`, `indicatesWorkInProgress == false` (the compile-forced
+  exhaustive switch), `isSessionEnd == false` (the *turn* ended, not the session). No new
+  `ClaudeSessionState`: `derive` → `.done`, `automationIntent` → `.release`, display `evaluate` →
+  `.waiting` all follow with zero special-casing. `.unknown`'s hold-within-cap safety net is
+  **unchanged**.
+- `Support/ClaudeHeartbeat/settings-snippet.json`: add a matcher-less `StopFailure` block (fires on
+  every error type, mirroring `Stop`).
+- `Support/ClaudeHeartbeat/README.md`: add `StopFailure` to the wired-events list + a "Why
+  `StopFailure`?" explainer (API-error finish → Done + release; no matcher; only the safe
+  `{event, session id, folder}` recorded — never the error/tool/text).
+- Tests (`ClaudeHeartbeatTests.swift`, `ClaudeSessionTests.swift`): mapping + classification; on-disk
+  decode → recognised event (not `.unknown`); `derive` → `.done` at all ages (with the stuck-Quiet
+  bug and the fix shown side by side on one 300s timeline); `automationIntent` → `.release` + a
+  still-working sibling still holds; display → `.waiting`; the radar⇔automation drift-guard extended;
+  and a **subprocess privacy test** feeding a realistic `StopFailure` payload with error type/message,
+  asserting none of it leaks (only the safe fields written).
+- `docs/decisions/0019-stopfailure-heartbeat.md` (new ADR, mirrors 0018).
+
+**Manual step for existing installs (required for the fix to take effect).** The code recognises the
+event, but the hook must emit it. Add to the `hooks` object in `~/.claude/settings.json` (same
+absolute script path as the other entries), then restart Claude Code:
+`"StopFailure": [ { "hooks": [ { "type": "command", "command": "'/ABSOLUTE/PATH/TO/vibemenu-claude-hook.sh'" } ] } ]`.
+VibeMenu did **not** touch the real `~/.claude/settings.json` — only the sample snippet + docs.
+
+**Validation.** `swift build` → `Build complete! (2.11s)`; `scripts/test.sh` → **570 tests / 89
+suites passed** (was 564; +6 new `stopFailure` tests, each confirmed run+passed in the output);
+`xcodebuild -project App/VibeMenu.xcodeproj -scheme VibeMenu -configuration Debug build` → **BUILD
+SUCCEEDED**; `git diff --check` clean; `git status --short` shows only the intended 5 tracked files
+(+ this log + the new ADR). Diff is +142/−8 across the touched files.
+
+**Not verified.** A real API-error turn was **not** reproduced on this machine, so the end-to-end path
+(Claude writes a `StopFailure` heartbeat → row flips to Done → assertion releases) is **unverified
+live** — the mechanism is proven by source + unit tests and the external event fact by the hooks
+reference, but not observed on screen. Smallest next experiment is in ADR 0019 (§ *Verification*):
+install the block, trigger a rate-limit/overload finish, and watch the heartbeat file's `event`,
+the radar row, and `pmset -g assertions`.
+
+**Next step.** Owner review; optional live confirmation via the experiment above. Not committed.

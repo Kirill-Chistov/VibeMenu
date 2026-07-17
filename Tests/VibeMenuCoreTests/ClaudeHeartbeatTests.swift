@@ -25,6 +25,7 @@ struct ClaudeHeartbeatEventTests {
         #expect(ClaudeHeartbeatEvent(hookEventName: "Notification") == .notification)
         #expect(ClaudeHeartbeatEvent(hookEventName: "PermissionRequest") == .permissionRequested)
         #expect(ClaudeHeartbeatEvent(hookEventName: "Stop") == .stop)
+        #expect(ClaudeHeartbeatEvent(hookEventName: "StopFailure") == .stopFailure)
         #expect(ClaudeHeartbeatEvent(hookEventName: "SessionEnd") == .sessionEnd)
     }
 
@@ -38,7 +39,8 @@ struct ClaudeHeartbeatEventTests {
             #expect(e.isActiveEvent)
             #expect(!e.isWaitingEvent)
         }
-        for e in [ClaudeHeartbeatEvent.stop, .notification] {
+        // `stopFailure` (turn ended on an API error) is a finish, exactly like `stop`.
+        for e in [ClaudeHeartbeatEvent.stop, .stopFailure, .notification] {
             #expect(e.isWaitingEvent)
             #expect(!e.isActiveEvent)
         }
@@ -46,6 +48,9 @@ struct ClaudeHeartbeatEventTests {
         #expect(!ClaudeHeartbeatEvent.permissionRequested.isActiveEvent)
         #expect(ClaudeHeartbeatEvent.sessionEnd.isSessionEnd)
         #expect(!ClaudeHeartbeatEvent.stop.isSessionEnd)
+        // A StopFailure ends the *turn*, not the *session* — the user can retry, so it is a
+        // finish but not a session end (unlike SessionEnd).
+        #expect(!ClaudeHeartbeatEvent.stopFailure.isSessionEnd)
     }
 
     /// The automation "work in progress" classification is deliberately *broader* than
@@ -57,7 +62,9 @@ struct ClaudeHeartbeatEventTests {
                   .subagentStart, .subagentStop, .unknown] {
             #expect(e.indicatesWorkInProgress, "\(e) should hold")
         }
-        for e in [ClaudeHeartbeatEvent.stop, .notification, .sessionStart, .permissionRequested] {
+        // `stopFailure` must NOT hold — the turn already ended (on an API error), so there is no
+        // work in flight; it releases the assertion exactly like `stop` (docs/decisions/0019).
+        for e in [ClaudeHeartbeatEvent.stop, .stopFailure, .notification, .sessionStart, .permissionRequested] {
             #expect(!e.indicatesWorkInProgress, "\(e) should not hold")
         }
     }
@@ -70,7 +77,8 @@ struct ClaudeHeartbeatEventTests {
             #expect(e.isLifecycleOnly, "\(e) should be lifecycle-only")
         }
         for e in [ClaudeHeartbeatEvent.userPromptSubmit, .preToolUse, .postToolUse,
-                  .subagentStart, .subagentStop, .stop, .notification, .permissionRequested, .unknown] {
+                  .subagentStart, .subagentStop, .stop, .stopFailure, .notification,
+                  .permissionRequested, .unknown] {
             #expect(!e.isLifecycleOnly, "\(e) should not be lifecycle-only")
         }
     }
@@ -116,6 +124,15 @@ struct ClaudeHeartbeatEvaluateTests {
     /// 4. A recent `Stop` heartbeat ⇒ `.waiting` (Claude finished, awaiting input).
     @Test func stopIsWaiting() {
         #expect(evaluate([rec(.stop, age: 2)]) == .waiting)
+    }
+
+    /// 4b. A recent `StopFailure` heartbeat ⇒ `.waiting` — the turn ended on an API error, so
+    ///     Claude is stopped and the user is the one to act (same display verdict as `Stop`, and
+    ///     never `.active`).
+    @Test func stopFailureIsWaiting() {
+        let state = evaluate([rec(.stopFailure, age: 2)])
+        #expect(state == .waiting)
+        #expect(state != .active)
     }
 
     /// 5. A recent `Notification` heartbeat ⇒ `.waiting`.
@@ -279,6 +296,23 @@ struct ClaudeAutomationIntentTests {
         #expect(intent([rec(.stop, age: 1)]) == .release)
     }
 
+    /// 5b. `StopFailure` releases immediately — the turn ended (on an API error), so exactly like
+    ///     `Stop` there is no work in flight to hold for. The keep-awake half of the
+    ///     docs/decisions/0019 fix: an errored-out session must stop pinning the Mac awake, at any
+    ///     age (age is irrelevant once the turn has ended — the bug was it holding until the cap).
+    @Test func stopFailureReleasesImmediately() {
+        #expect(intent([rec(.stopFailure, age: 1)]) == .release)
+        #expect(intent([rec(.stopFailure, age: 300)]) == .release)
+    }
+
+    /// 5c. But a `StopFailure` never forces a *global* release: a still-working sibling session
+    ///     keeps holding (parity with `Stop`; task rule 5 — any one working session wins).
+    @Test func stopFailureDoesNotForceGlobalRelease() {
+        let mixed = [rec(.stopFailure, age: 2, session: "errored"),
+                     rec(.preToolUse, age: 2, session: "working")]
+        #expect(intent(mixed) == .hold)
+    }
+
     /// 6. `SessionEnd` releases immediately (session excluded; no other holding session).
     @Test func sessionEndReleasesImmediately() {
         #expect(intent([rec(.sessionEnd, age: 1)]) == .release)
@@ -378,6 +412,16 @@ struct ClaudeHeartbeatDecodeTests {
         #expect(record.event == .preToolUse)
         #expect(record.updatedAt == Date(timeIntervalSince1970: 1783033591))
         #expect(record.project == nil)   // schema-1 file has no project field
+    }
+
+    /// 14a″. A `StopFailure` heartbeat file decodes to the **recognized** `.stopFailure` event
+    /// (not `.unknown`) — the finish signal for a turn that ended on an API error
+    /// (docs/decisions/0019). Guards the raw-name → case mapping through the on-disk shape.
+    @Test func decodesStopFailureAsRecognizedEvent() throws {
+        let json = #"{"schemaVersion":2,"updatedAt":1783033591,"event":"StopFailure","sessionID":"abc","project":"VibeMenu"}"#
+        let record = try #require(ClaudeHeartbeatRecord.decode(from: Data(json.utf8)))
+        #expect(record.event == .stopFailure)
+        #expect(record.event != .unknown)
     }
 
     /// 14a′. A schema-2 file carries the project **folder name**; empty/whitespace/missing all
@@ -587,6 +631,34 @@ struct ClaudeHeartbeatScriptTests {
         #expect(contents.contains("\"event\":\"PostToolUse\""))
         #expect(contents.contains("\"sessionID\":\"sess-77\""))
         #expect(contents.contains("\"project\":\"PrivateRepo\""))
+    }
+
+    /// 13c. A realistic `StopFailure` payload — the turn errored out, so the payload carries the
+    ///      error detail the event is *about* — records only the safe finish signal
+    ///      (`event=StopFailure`, session id, folder name). The error type/message must never leak,
+    ///      exactly as for every other event: docs/decisions/0019 keeps the same privacy contract.
+    @Test func stopFailurePayloadRecordsFinishAndIgnoresErrorDetail() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let payload = """
+        {"session_id":"sess-err","hook_event_name":"StopFailure",\
+        "cwd":"/Users/someone/Work/MyRepo",\
+        "error_type":"rate_limit",\
+        "error":{"type":"overloaded","message":"SECRET-ERROR-DETAIL upstream 529"}}
+        """
+        let code = try run(stdin: payload, dir: dir)
+        #expect(code == 0)
+
+        let contents = try String(contentsOf: dir.appendingPathComponent("sess-err.json"), encoding: .utf8)
+        #expect(contents.contains("\"event\":\"StopFailure\""))
+        #expect(contents.contains("\"sessionID\":\"sess-err\""))
+        #expect(contents.contains("\"project\":\"MyRepo\""))
+        // The error detail the event carries must never leak into VibeMenu's heartbeat file.
+        for secret in ["SECRET-ERROR-DETAIL", "rate_limit", "overloaded", "529",
+                       "error_type", "\"error\"", "message"] {
+            #expect(!contents.contains(secret), "leaked: \(secret)")
+        }
     }
 
     /// 13b. **Nested fields cannot override top-level fields.** The payload's TOP-LEVEL

@@ -56,6 +56,9 @@ previews. It is Apache-2.0 licensed; the name, logo, and brand assets are separa
   `PermissionRequest` heartbeat event; Allow clears on the next lifecycle event, while Deny
   may linger until the next event or the 30-minute prune. Codex CLI sessions and internal
   subagent rollouts are excluded.
+  Claude Code `StopFailure` heartbeats are recognized as finished, non-holding turns so API-error
+  completions become **Done** and release automatic sleep prevention. The installed hook registration
+  and sanitized payload path were validated; a genuine API-error event remains unobserved end-to-end.
 - Coarse macOS thermal state (Nominal/Fair/Serious/Critical), row visibility preferences,
   Launch at Login through public `SMAppService`, and compact Settings with Claude/Codex
   disclosures.

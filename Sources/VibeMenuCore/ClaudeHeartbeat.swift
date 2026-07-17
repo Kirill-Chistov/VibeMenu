@@ -47,6 +47,19 @@ public enum ClaudeHeartbeatEvent: String, Codable, Equatable, Sendable, CaseIter
     /// (`SessionEnd`/a new prompt) or the prune horizon (docs/decisions/0018).
     case permissionRequested
     case stop
+    /// The turn ended because of an **API error**, not a normal completion: Claude Code's
+    /// documented `StopFailure` hook, which fires when the request errored out (rate limit,
+    /// overloaded, server error, auth/billing failure, …) instead of `Stop`. Crucially, on the
+    /// error path **`Stop` does not fire — only `StopFailure`** (verified against the Claude Code
+    /// hooks reference), so without recognising it the session's newest heartbeat stays the last
+    /// *work* event (`PreToolUse`/`PostToolUse`/…). That leaves a **finished** session stuck as
+    /// `.quietWorking` ("Quiet") until it ages out to `.stale`, and — because an unrecognised name
+    /// falls to `.unknown`, which `indicatesWorkInProgress` — keeps automatic sleep prevention held
+    /// after the turn already ended (docs/decisions/0019). Treated exactly like `Stop`: a finished
+    /// turn awaiting the user (`isWaitingEvent`, **not** `indicatesWorkInProgress`), so it derives
+    /// `.done` and releases the hold. It is **not** `isSessionEnd` — the session stays alive and the
+    /// user can retry, at which point the next event overwrites this heartbeat.
+    case stopFailure
     case sessionEnd
     /// Any hook name we do not recognise (kept explicit rather than dropped, so a future
     /// Claude Code event still records a live-session heartbeat instead of vanishing).
@@ -65,6 +78,7 @@ public enum ClaudeHeartbeatEvent: String, Codable, Equatable, Sendable, CaseIter
         case "Notification": self = .notification
         case "PermissionRequest": self = .permissionRequested
         case "Stop": self = .stop
+        case "StopFailure": self = .stopFailure
         case "SessionEnd": self = .sessionEnd
         default: self = .unknown
         }
@@ -83,11 +97,12 @@ public enum ClaudeHeartbeatEvent: String, Codable, Equatable, Sendable, CaseIter
         }
     }
 
-    /// Events that indicate Claude has **stopped and is waiting** (finished replying, or
-    /// posted a notification asking for attention).
+    /// Events that indicate Claude has **stopped and is waiting** (finished replying, ended a
+    /// turn on an API error, or posted a notification asking for attention). `stopFailure` is a
+    /// finish just like `stop` — the turn is over and the user is now the one to act (retry).
     public var isWaitingEvent: Bool {
         switch self {
-        case .stop, .notification: return true
+        case .stop, .stopFailure, .notification: return true
         default: return false
         }
     }
@@ -134,9 +149,11 @@ public enum ClaudeHeartbeatEvent: String, Codable, Equatable, Sendable, CaseIter
         case .userPromptSubmit, .preToolUse, .postToolUse,
              .subagentStart, .subagentStop, .unknown:
             return true
-        case .sessionStart, .notification, .permissionRequested, .stop, .sessionEnd:
+        case .sessionStart, .notification, .permissionRequested, .stop, .stopFailure, .sessionEnd:
             // `.permissionRequested`: Claude is blocked on a user Allow/Deny decision — the *user*
             // is the bottleneck, not Claude, so the Mac may sleep (SPEC §5.1, like `.notification`).
+            // `.stopFailure`: the turn already ended (on an API error), so — exactly like `.stop` —
+            // there is no work in flight to hold for; releasing lets the Mac sleep (docs/decisions/0019).
             return false
         }
     }

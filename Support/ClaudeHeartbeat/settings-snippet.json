@@ -70,6 +70,13 @@
         ]
       }
     ],
+    "StopFailure": [
+      {
+        "hooks": [
+          { "type": "command", "command": "'/ABSOLUTE/PATH/TO/vibemenu-claude-hook.sh'" }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "hooks": [

@@ -93,7 +93,8 @@ path from step 1 (keep the surrounding single quotes so a path with spaces works
 
 The block wires the observed lifecycle events: `SessionStart`, `UserPromptSubmit`,
 `PreToolUse` (matcher `"*"`), `PostToolUse` (matcher `"*"`), `SubagentStart`,
-`SubagentStop`, `Notification`, `PermissionRequest` (matcher `"*"`), `Stop`, `SessionEnd`.
+`SubagentStop`, `Notification`, `PermissionRequest` (matcher `"*"`), `Stop`, `StopFailure`,
+`SessionEnd`.
 
 > **Why `PermissionRequest`?** It is Claude Code's documented hook that fires the moment a
 > tool-use Allow/Deny prompt is presented — **before** you respond. VibeMenu records it as the
@@ -118,6 +119,18 @@ The block wires the observed lifecycle events: `SessionStart`, `UserPromptSubmit
 > [`../../docs/decisions/0010-quiet-work-hold.md`](../../docs/decisions/0010-quiet-work-hold.md)).
 > They are optional — without them an aged active event still holds within the bounded cap —
 > but wiring them gives a longer, more accurate hold across subagent gaps.
+
+> **Why `StopFailure`?** Claude Code fires `Stop` when a turn finishes normally, but
+> `StopFailure` when the turn ends because of an **API error** (rate limit, overloaded, server
+> error, auth/billing failure, …) — and on that error path **only `StopFailure` fires, never
+> `Stop`**. So if you don't wire it, a session that errored out leaves its last *work* event
+> (`PreToolUse`/`PostToolUse`/…) as the newest heartbeat, and VibeMenu keeps showing that
+> finished session as **Quiet** (holding sleep prevention) until it ages out ~15 minutes later.
+> Wiring `StopFailure` records the finish immediately, so the row flips to **Done** and automatic
+> keep-awake releases — exactly like a normal `Stop`. It needs **no matcher** (the block above
+> omits it, which matches every error type, including future ones). Only the safe `{event name,
+> session id, folder}` is recorded — never the error, the tool, or any conversation text
+> (docs/decisions/0019-stopfailure-heartbeat.md).
 
 > **Already have hooks for some of these events?** Don't replace them — add the VibeMenu
 > command as an *additional* entry in that event's array. Claude Code runs every configured
