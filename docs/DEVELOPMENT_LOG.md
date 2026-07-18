@@ -4004,3 +4004,37 @@ performed.
 **Next step.** After the owner enables VibeMenu notification sounds in macOS notification settings,
 manually confirm one visible Attention notification and its standard macOS sound with the Mac's
 notification, Focus, volume, and sound settings permitting it.
+
+## 2026-07-18 — Centralized Recent sessions expansion
+
+**Task.** Replace the asymmetric Claude/Codex session overflow with one bounded, provider-neutral
+Recent sessions expansion (ADR 0017 Amendment 5). This remains a display affordance, not a session-
+history screen or persistent queue.
+
+**What changed.** `AgentSessionRadar.Presentation` now exposes `items`, `overflowItems`,
+`hiddenCount`, and `olderHiddenCount`. The presenter keeps the shared four-row primary prefix,
+merges eligible hidden Claude/Codex suffixes with the same cross-provider priority/recency comparison,
+and caps the expanded list at ten rows. `AgentSessionsSection` now has one collapsed control and
+renders both existing provider-specific row views in the unified expansion, preserving activation,
+drag-right hiding, right-click hiding, provider pills, and name handling. Focused pure presenter tests
+cover provider-only and mixed overflow, ranking, caps, counts, no-overflow, and prefiltered hidden
+rows. The required research files were preserved untouched.
+
+**Validation.**
+
+- `swift test --filter AgentSessionRadarTests` → **27 tests in 2 suites passed**.
+- `swift build` → **Build complete! (0.38s)**.
+- `scripts/test.sh` → **614 tests in 90 suites passed**.
+- `xcodebuild -project App/VibeMenu.xcodeproj -scheme VibeMenu -configuration Debug -derivedDataPath ./.derivedData build` → **BUILD SUCCEEDED**; only the existing multiple-destination warning and non-fatal AppIntents metadata warning appeared.
+- `git diff --check` → clean.
+
+**Manual result.** The Debug app was launched from `./.derivedData/Build/Products/Debug/VibeMenu.app`
+and its process was present. The first accessibility capture was ambiguous because an installed app
+with the same bundle identifier was also running; after isolating the Debug process, the menu-bar-only
+accessibility capture timed out. The requested live one-control/expanded mixed-provider row, click,
+and hide smoke was therefore **not verified live**; the pure presenter tests and app build are the
+available validation. No settings, transcript content, network call, or protected research file was
+changed.
+
+**Next step.** Owner smoke-test with more than four Codex sessions and a mixed Claude/Codex list:
+confirm one control, shared ordering, provider activation, drag-right hide, and right-click hide.

@@ -287,16 +287,15 @@ public struct CodexRow: Equatable, Sendable, Identifiable {
 /// budget and disambiguate names. The reader already sorts most-active-first, so this only *caps*
 /// and *names* — it never re-prioritises. Fully unit-tested (no SwiftUI, no I/O).
 ///
-/// The `limit` is supplied by the menu so Claude and Codex share one compact budget (Claude rows
-/// take slots first; Codex fills the remainder — task Part 4: "up to 4 total visible sessions
-/// across providers").
+    /// The shared menu uses `AgentSessionRadar.present` for its four-row interleave and unified
+    /// overflow; this standalone presenter remains available for provider-local cap tests/callers.
 public enum CodexSessionRadar {
     /// Default cap when the caller doesn't pass a budget (Codex shown on its own).
     public static let maxVisibleRows = 4
 
     public struct Presentation: Equatable, Sendable {
         public let rows: [CodexRow]
-        /// Eligible sessions the cap elided (drives a "+N more Codex sessions" note).
+        /// Eligible sessions elided by this standalone Codex cap.
         public let hiddenCount: Int
 
         public init(rows: [CodexRow], hiddenCount: Int) {

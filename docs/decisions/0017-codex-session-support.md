@@ -357,3 +357,44 @@ un-hide, stable-id-across-title-change, hide-all); and `CodexSessionModel` hide 
 visible rows while the raw power-loop list is untouched, hidden filtered before the cap, revive on newer
 activity). Codex is still **not** an `AutomationPolicy` input — the shared decision lives in
 `PowerAssertionModel`, and `AutomationPolicy.PolicyInput` keeps no Codex field.
+
+## Amendment 5 — 2026-07-18 (centralized bounded Recent sessions expansion)
+
+The shared presenter already interleaved Claude and Codex for the four-row primary list, but the
+menu still exposed Claude's bounded overflow separately from a provider-specific Codex count. That
+made the same shared list behave differently depending on which provider overflowed.
+
+### Decision
+
+- `AgentSessionRadar.Presentation` owns one provider-neutral shape: `items`, `overflowItems`,
+  `hiddenCount`, and `olderHiddenCount`.
+- The primary `items` list remains the existing shared four-row prefix and uses the existing
+  cross-provider bucket/recency comparison unchanged.
+- The presenter builds the hidden Claude stream from rows bumped by the shared cap plus Claude's
+  already-eligible bounded overflow, and the hidden Codex stream from the reader-provided,
+  provider-filtered, user-visible session list. It merges those streams with the same comparison and
+  reveals at most `SessionRadar.maxOverflowRows` (10) rows.
+- `hiddenCount` is the total eligible remainder from both providers. `olderHiddenCount` is the
+  provider-neutral remainder after the ten-row expansion bound; it is shown only when expanded.
+- The SwiftUI section renders one collapsed `+N more recent session(s)` control and, when expanded,
+  one `Recent sessions` list. Each item still selects the existing Claude or Codex row view, so
+  provider pills, activation, drag-right hiding, context-menu hiding, and provider-specific naming
+  remain intact. The local expansion state still resets when the menu content is recreated.
+
+This is a single centralized, bounded recent-session expansion. It is a display affordance, not a
+session-history screen, persistent queue, search surface, or new provider setting.
+
+### Consequences
+
+Claude's age, home-noise, unknown, Done, and Stale eligibility rules remain in `SessionRadar`; Codex
+reader recency and provider filtering remain in `CodexSessionReader`; user-hidden sessions remain
+filtered before presentation. There are no provider-specific overflow counters in the shared model
+or menu. The bounded input supplied by Claude's presenter is sufficient for the first ten shared
+overflow positions; any older eligible remainder is counted but not materialised.
+
+### Testing
+
+Pure `AgentSessionRadar` tests cover Claude-only and Codex-only expansion, mixed ordering, active
+Codex versus Done Claude ranking, higher-priority hidden Claude rows, the four/ten row caps, combined
+and older counts, singular/plural count values, no-overflow behavior, and the fact that filtered
+hidden rows cannot reappear.

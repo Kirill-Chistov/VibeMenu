@@ -2,10 +2,9 @@ import Foundation
 import Testing
 @testable import VibeMenuCore
 
-// Pure presentation tests for `CodexSessionRadar.present` (docs/decisions/0017): the Codex portion
-// of the shared AI Agent list — cap to a budget, disambiguate names. Combined with the shared
-// budget the menu applies (Claude rows take slots first), these pin the "up to 4 total across
-// providers" ordering (task Part 4).
+// Pure presentation tests for `CodexSessionRadar.present` (docs/decisions/0017): the standalone
+// Codex cap and name disambiguation. The shared menu's cross-provider budget and overflow are tested
+// through `AgentSessionRadar`.
 
 @Suite("CodexSessionRadar — caps + disambiguation")
 struct CodexSessionRadarTests {
@@ -60,9 +59,9 @@ struct CodexSessionRadarTests {
     }
 }
 
-@Suite("Shared AI Agent budget — Claude rows first, Codex fills the remainder")
+@Suite("Standalone Codex presentation budgets")
 struct AgentSharedBudgetTests {
-    // Mirrors the menu's `codexBudget = max(0, SessionRadar.maxVisibleRows - claudeRowCount)`.
+    // Provider-local budgets retained for the standalone Codex presenter.
     private func codexBudget(claudeRowCount: Int) -> Int {
         max(0, SessionRadar.maxVisibleRows - claudeRowCount)
     }

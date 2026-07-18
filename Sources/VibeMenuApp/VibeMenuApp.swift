@@ -894,18 +894,17 @@ struct MenuContentView: View {
 /// Replaces the old Claude-only `SessionRadarView` and the later aggregate agent-status line:
 /// there is now **no textual status row at all** and **no empty-state
 /// placeholder**. The sessions area shows real per-session rows directly, most-active/recent first.
-/// Claude Code session rows are **unchanged** (`SessionRow`, with drag / right-click dismiss and the
-/// existing "+N more recent sessions" overflow). Opt-in Codex Desktop rows (`CodexSessionRow`) render
-/// interleaved with a clear "Codex" pill and now carry the **same drag / right-click hide** as Claude
-/// rows (Fix 2). Both providers' hidden rows are filtered *before* interleaving, so the user can hide
-/// every row; when nothing visible remains the parent (via `agentSessionsHasContent` /
-/// `AgentSessionRadar.hasVisibleContent`) does not instantiate this section at all, so the whole
-/// section and its dividers collapse to zero height — never a forced-back row, an empty box, or a
-/// "No active sessions" line, whether the sessions were hidden or there simply are none.
+/// Claude Code session rows are **unchanged** (`SessionRow`) and opt-in Codex Desktop rows
+/// (`CodexSessionRow`) render interleaved with a clear provider pill. Both providers' hidden rows are
+/// filtered *before* interleaving, so the user can hide every row; when nothing visible remains the
+/// parent (via `agentSessionsHasContent` / `AgentSessionRadar.hasVisibleContent`) does not instantiate
+/// this section at all, so the whole section and its dividers collapse to zero height — never a
+/// forced-back row, an empty box, or a "No active sessions" line, whether the sessions were hidden or
+/// there simply are none.
 ///
-/// The two providers share one **compact budget**: Claude rows take slots first and Codex fills the
-/// remainder, so no more than `SessionRadar.maxVisibleRows` (4) rows show across both before Codex
-/// overflow collapses into a "+N more Codex sessions" note (task Part 4).
+/// The two providers share one **compact budget** of four primary rows. Any eligible remainder is
+/// exposed through one centralized, bounded Recent sessions expansion; the model keeps its rows in
+/// the same cross-provider priority/recency order as the primary list.
 struct AgentSessionsSection: View {
     var claude: ClaudeActivityModel
     var codex: CodexSessionModel
@@ -914,8 +913,8 @@ struct AgentSessionsSection: View {
     let codexEnabled: Bool
     let activate: (AttentionProvider) -> Void
 
-    /// Whether the Claude "+N more recent sessions" overflow is expanded. Local + collapsed by
-    /// default, so the list starts compact each time the menu opens.
+    /// Whether the shared "+N more recent sessions" overflow is expanded. Local + collapsed by
+    /// default, so the list starts compact each time the menu content is recreated.
     @State private var showOverflowSessions = false
 
     var body: some View {
@@ -965,10 +964,10 @@ struct AgentSessionsSection: View {
                     }
                 }
 
-                // Claude overflow control (unchanged behaviour): collapsed it summarises the elided
-                // Claude sessions (including any bumped out of the shared cap by a busier Codex row);
-                // expanded it reveals them (capped) below.
-                if agentList.claudeHiddenCount > 0 {
+                // One provider-neutral overflow control. Its model already contains the next rows
+                // from both providers in shared priority/recency order; SwiftUI only selects the
+                // existing provider-specific row renderer for each item.
+                if agentList.hiddenCount > 0 {
                     Button {
                         showOverflowSessions.toggle()
                     } label: {
@@ -977,7 +976,7 @@ struct AgentSessionsSection: View {
                                 Text("Recent sessions")
                                 Image(systemName: "chevron.down")
                             } else {
-                                Text("+\(agentList.claudeHiddenCount) more recent session\(agentList.claudeHiddenCount == 1 ? "" : "s")")
+                                Text("+\(agentList.hiddenCount) more recent session\(agentList.hiddenCount == 1 ? "" : "s")")
                                 Image(systemName: "chevron.right")
                             }
                         }
@@ -988,27 +987,27 @@ struct AgentSessionsSection: View {
                     .buttonStyle(.plain)
                     .help(showOverflowSessions
                         ? "Hide the older recent sessions again."
-                        : "Show more recent sessions (Claude is untouched).")
+                        : "Show more recent sessions.")
 
                     if showOverflowSessions {
-                        ForEach(agentList.claudeOverflowRows) { row in
-                            SessionRow(row: row, now: now, onActivate: { activate(.claude) }) {
-                                withAnimation(.easeOut(duration: 0.22)) { claude.dismiss(row.session) }
+                        ForEach(agentList.overflowItems) { item in
+                            switch item {
+                            case .claude(let row):
+                                SessionRow(row: row, now: now, onActivate: { activate(.claude) }) {
+                                    withAnimation(.easeOut(duration: 0.22)) { claude.dismiss(row.session) }
+                                }
+                            case .codex(let row):
+                                CodexSessionRow(row: row, now: now, onActivate: { activate(.codex) }) {
+                                    withAnimation(.easeOut(duration: 0.22)) { codex.dismiss(row.session) }
+                                }
                             }
                         }
-                        if agentList.claudeOlderHiddenCount > 0 {
-                            Text("+\(agentList.claudeOlderHiddenCount) older session\(agentList.claudeOlderHiddenCount == 1 ? "" : "s") hidden")
+                        if agentList.olderHiddenCount > 0 {
+                            Text("+\(agentList.olderHiddenCount) older session\(agentList.olderHiddenCount == 1 ? "" : "s") hidden")
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
                         }
                     }
-                }
-
-                // Extra Codex sessions that didn't fit the shared budget collapse into a note.
-                if agentList.codexHiddenCount > 0 {
-                    Text("+\(agentList.codexHiddenCount) more Codex session\(agentList.codexHiddenCount == 1 ? "" : "s")")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
                 }
             }
             .animation(.snappy, value: showOverflowSessions)

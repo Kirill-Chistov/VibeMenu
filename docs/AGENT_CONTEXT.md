@@ -48,8 +48,9 @@ previews. It is Apache-2.0 licensed; the name, logo, and brand assets are separa
 - Claude detection from process/file metadata, with an optional user-installed Claude
   heartbeat hook for reliable working/waiting states. The hook is never installed
   automatically.
-- Shared Session Radar for Claude and Codex Desktop: bounded recent rows, working/quiet/
-  waiting/done/stale states, elapsed time, safe titles/folder names, and per-row hide.
+- Shared Session Radar for Claude and Codex Desktop: a four-row interleaved primary list plus one
+  centralized bounded Recent sessions expansion (up to ten extra rows), working/quiet/waiting/
+  done/stale states, elapsed time, safe titles/folder names, and per-row hide.
   Claude Desktop approval prompts surface as **Needs approval** from the opt-in
   `PermissionRequest` heartbeat event; Allow clears on the next lifecycle event, while Deny
   may linger until the next event or the 30-minute prune. Hook users also recognize Claude
@@ -181,6 +182,10 @@ when the agent can determine routine steps safely from the repo.
   from the safe sequence `... → Stop → SubagentStop`; focused tests, the full suite, both builds,
   and a real post-fix safe-field capture passed. The menu-bar-only row/notification click smoke
   remains a live UI check because its accessibility surface was unavailable.
+- **Current uncommitted Recent sessions follow-up (2026-07-18):** the Session Radar now exposes one
+  provider-neutral `AgentSessionRadar.Presentation` overflow list for Claude and Codex. The primary
+  list remains capped at four; the expansion is capped at ten and reports one provider-neutral older
+  remainder. It is a bounded display expansion, not session history or a persistent queue.
 - **Known stale:** `docs/assets/vibemenu-menu.png` is the v0.1.x menu and is deliberately not
   shown in the README until a current capture replaces it. A few source comments still describe a
   `"Claude" row` / pre-wrapper state (e.g. `ClaudeActivityModel.swift`, `Package.swift`); they are
@@ -268,7 +273,11 @@ Sequence to date:
    row/notification activation remains an owner UI smoke check because this menu-bar-only
    environment did not expose the popover to accessibility inspection. Exact thread/window
    selection remains best-effort and evidence-gated.
-4. **Safe Unattended Runs (not started, gated):** after a separate product decision, add
+4. **Centralized Recent sessions expansion — implemented in the current worktree:** one shared,
+   provider-neutral expansion reveals up to ten eligible Claude/Codex rows in the same ordering as the
+   four-row primary list, with one combined hidden count and older remainder. This remains a bounded
+   display affordance, not a history screen or persistent queue.
+5. **Safe Unattended Runs (not started, gated):** after a separate product decision, add
    battery/thermal keep-awake guardrails with visible reasons and explicit manual-override
    semantics.
 
