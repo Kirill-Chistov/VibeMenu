@@ -568,12 +568,9 @@ struct VibeMenuApp: App {
     @State private var thermal = ThermalStatusModel(provider: SystemThermalStatusProvider())
 
     var body: some Scene {
-        // Custom menu-bar glyph: the VibeMenu chevron + pulse motif, shipped as a
-        // template image in the app's asset catalog (App/Assets.xcassets/MenuBarIcon).
-        // As a template, macOS tints it for light/dark menu bars automatically. The
-        // asset lives only in the .app target; `Image(_:)` resolves it from the app
-        // bundle at runtime and the string name compiles fine under plain `swift build`.
-        MenuBarExtra("VibeMenu", image: "MenuBarIcon") {
+        // The label observes the raw Claude session list, so the icon updates even when the
+        // optional Agent notifications setting is off.
+        MenuBarExtra {
             MenuContentView(
                 thermal: thermal,
                 claude: appDelegate.claude,
@@ -589,6 +586,8 @@ struct VibeMenuApp: App {
                 .onAppear {
                     thermal.start()
                 }
+        } label: {
+            MenuBarIconLabel(claude: appDelegate.claude)
         }
         .menuBarExtraStyle(.window)
 
@@ -602,6 +601,27 @@ struct VibeMenuApp: App {
                 attention: appDelegate.attention
             )
         }
+    }
+}
+
+/// Reactive label for the raw Claude attention state. Normal uses the existing template asset so
+/// macOS controls its light/dark menu-bar appearance; attention uses a separate baked-color asset.
+private struct MenuBarIconLabel: View {
+    let claude: ClaudeActivityModel
+
+    var body: some View {
+        Group {
+            if claude.needsAttention {
+                Image("MenuBarAttentionIcon")
+                    .renderingMode(.original)
+            } else {
+                Image("MenuBarIcon")
+                    .renderingMode(.template)
+            }
+        }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("VibeMenu")
+            .accessibilityValue(claude.needsAttention ? "Needs attention" : "Normal")
     }
 }
 

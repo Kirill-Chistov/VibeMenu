@@ -4038,3 +4038,50 @@ changed.
 
 **Next step.** Owner smoke-test with more than four Codex sessions and a mixed Claude/Codex list:
 confirm one control, shared ordering, provider activation, drag-right hide, and right-click hide.
+
+## 2026-07-18 — Reactive Claude approval menu-bar indicator
+
+Corrected the Attention v1 menu-bar implementation in place. The raw Claude session list still feeds
+the existing `ClaudeActivityModel.needsAttention` decision, but the custom `MenuBarExtra` label now
+selects `MenuBarAttentionIcon` for a genuine `.permissionRequested` session and the existing
+`MenuBarIcon` otherwise. The attention asset is original-color artwork; the normal asset remains a
+template so macOS controls its adaptive light/dark menu-bar appearance. Accessibility exposes only
+`VibeMenu` with `Normal` or `Needs attention`; no notification, session derivation, timer, approval
+inference, or Claude Deny behavior changed.
+
+The supplied source PNG was inspected as 1024×1024 RGBA with alpha 0…255. Its visible artwork bounds
+are x=179…844 and y=269…754 (exclusive bounds 179,269–845,755), leaving symmetric horizontal and
+vertical padding of 179px and 269px. Only that transparent outer margin was removed; the visible
+artwork was then deterministically rasterized with the system `sips` tool into the normal asset's
+18/36/54px canvases, with matching visible bounds of 16×12, 32×24, and 48×36. Alpha and the baked
+orange artwork remain intact; there is no background, redraw, or new dependency. The catalog omits
+template intent for `MenuBarAttentionIcon`, while `VibeMenuApp.swift` explicitly requests
+`.renderingMode(.original)`.
+The existing `MenuBarIcon` PNGs were byte-identical to `HEAD`.
+
+Focused tests cover no sessions; Working, Quiet, Done, Stale, and Unknown; one approval; mixed
+ordinary/approval sessions; clearing approval; and a hidden approval row remaining present in the raw
+attention decision. No notification, session derivation, timer, power, dismissal, ordering, overflow,
+activation, or app setting behavior was changed.
+
+Validation:
+
+- `swift test --filter MenuBarAttentionTests` → **6 tests in 1 suite passed**.
+- `swift build` → **Build complete! (0.14s)**.
+- `scripts/test.sh` → **620 tests in 91 suites passed after 1.100 seconds**.
+- `xcodebuild -project App/VibeMenu.xcodeproj -scheme VibeMenu -configuration Debug -derivedDataPath ./.derivedData clean build` → **BUILD SUCCEEDED**; the existing multiple-destination warning and non-fatal AppIntents metadata warning appeared. The build emitted `Contents/Resources/Assets.car`; `assetutil` reported `MenuBarAttentionIcon` at 18/36px with `Opaque: false` and `Template Mode: automatic`, and `MenuBarIcon` with `Template Mode: template`.
+- `git diff --check` → clean.
+
+Manual result: duplicate VibeMenu processes were terminated, `HEAD` was confirmed as
+`b9d1f34f2aad10ad8f0fa80df3abb74673e3b35b`, and exactly
+`./.derivedData/Build/Products/Debug/VibeMenu.app` was launched and verified by its executable path.
+Computer Use timed out for both the exact app and `SystemUIServer`;
+a read-only screen capture did not expose an identifiable VibeMenu status item or menu. Therefore
+normal, orange Needs approval, approval-clear, menu-closed/open, hidden-row, and light/dark visual
+transitions are **unverified**. The pure raw-list hidden-row rule remains covered by the existing
+attention tests. No system/application settings, Claude settings, transcript content, or protected
+research files were changed.
+
+**Next step.** Owner smoke-test the three icon transitions from the exact Debug artifact with one real
+Claude `PermissionRequest` and its next lifecycle event, including a hidden pending row and closed/open
+menu plus light/dark appearances when available. No commit or push was performed.

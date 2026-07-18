@@ -258,6 +258,13 @@ public struct ClaudeSession: Equatable, Sendable, Identifiable {
     }
 }
 
+/// Whether any raw Claude session currently needs a real approval decision. The caller must pass
+/// the provider's raw session list, not a dismissed/presentation-filtered list, so hiding a row
+/// cannot suppress the menu-bar indicator.
+public func sessionsNeedAttention(_ sessions: [ClaudeSession]) -> Bool {
+    sessions.contains { $0.state.needsAttention }
+}
+
 extension ClaudeSession {
     /// The generic name shown when neither a title nor a project folder name is available
     /// (schema-1 heartbeat with no readable transcript title). The radar appends a stable index

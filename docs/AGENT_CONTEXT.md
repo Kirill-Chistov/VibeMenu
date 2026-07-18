@@ -186,6 +186,12 @@ when the agent can determine routine steps safely from the repo.
   provider-neutral `AgentSessionRadar.Presentation` overflow list for Claude and Codex. The primary
   list remains capped at four; the expansion is capped at ten and reports one provider-neutral older
   remainder. It is a bounded display expansion, not session history or a persistent queue.
+- **Current uncommitted menu-bar attention indicator (2026-07-18):** a custom `MenuBarExtra` label is
+  driven by the raw Claude session list. Any genuine `.permissionRequested` state selects the
+  separate baked-orange `MenuBarAttentionIcon` asset with original-color rendering; otherwise it
+  selects the existing `MenuBarIcon` template asset so macOS controls the normal adaptive menu-bar
+  tint. The indicator is independent of Agent notifications, hidden-row presentation, and Codex
+  state; the known Claude Deny limitation remains unchanged.
 - **Known stale:** `docs/assets/vibemenu-menu.png` is the v0.1.x menu and is deliberately not
   shown in the README until a current capture replaces it. A few source comments still describe a
   `"Claude" row` / pre-wrapper state (e.g. `ClaudeActivityModel.swift`, `Package.swift`); they are
@@ -271,8 +277,10 @@ Sequence to date:
    controlled by the Mac's notification, Focus, volume, and sound settings. There is no separate
    sound toggle or custom sound selection. The safe heartbeat behavior is verified; exact live
    row/notification activation remains an owner UI smoke check because this menu-bar-only
-   environment did not expose the popover to accessibility inspection. Exact thread/window
-   selection remains best-effort and evidence-gated.
+   environment did not expose the popover to accessibility inspection. The custom menu-bar label
+   selects the baked-orange asset for a genuine Claude **Needs approval** state and otherwise keeps
+   the existing template asset's normal adaptive system appearance. Exact thread/window selection
+   remains best-effort and evidence-gated.
 4. **Centralized Recent sessions expansion — implemented in the current worktree:** one shared,
    provider-neutral expansion reveals up to ten eligible Claude/Codex rows in the same ordering as the
    four-row primary list, with one combined hidden count and older remainder. This remains a bounded

@@ -1,0 +1,11 @@
+{
+  "images" : [
+    { "idiom" : "universal", "scale" : "1x", "filename" : "menubar_attention_orange_18.png" },
+    { "idiom" : "universal", "scale" : "2x", "filename" : "menubar_attention_orange_36.png" },
+    { "idiom" : "universal", "scale" : "3x", "filename" : "menubar_attention_orange_54.png" }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}

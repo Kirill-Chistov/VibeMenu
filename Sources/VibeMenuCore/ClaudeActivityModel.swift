@@ -40,6 +40,13 @@ public final class ClaudeActivityModel {
     /// whenever `sessions` changes or the user dismisses a row.
     public private(set) var visibleSessions: [ClaudeSession] = []
 
+    /// Whether any raw Claude session currently needs an approval decision. This deliberately reads
+    /// `sessions`, not `visibleSessions`, so the menu-bar indicator remains truthful when a row is
+    /// hidden from the Session Radar.
+    public var needsAttention: Bool {
+        sessionsNeedAttention(sessions)
+    }
+
     /// User-dismissed rows (pure hide-only registry). Owned here because dismissal is a main-actor
     /// UI action; the provider is unaware of it. Never persisted — an app restart clears it.
     @ObservationIgnored private var dismissed = DismissedSessionRegistry()

@@ -122,3 +122,20 @@ The Debug app was built and launched from the requested derived-data path. The m
 notification delivery, and provider activation could not be manually observed because the local UI
 accessibility surface exposed no VibeMenu menu window; those remain covered by the existing pure tests
 and explicitly unverified live behaviors.
+
+## Follow-up — menu-bar Needs approval indicator (2026-07-18)
+
+The existing `MenuBarIcon` template asset remains unchanged. A reactive custom `MenuBarExtra` label
+scans the raw Claude session list through the existing `ClaudeSessionState.needsAttention` contract:
+any `.permissionRequested` session selects `MenuBarAttentionIcon`, a separate asset generated from
+the supplied 1024×1024 RGBA source artwork at 18/36/54 pixels. The source's transparent outer margin
+is excluded, and the visible artwork is centered in matching 18/36/54px canvases with the same
+16×12, 32×24, and 48×36 visible bounds as `MenuBarIcon`. Its orange color and transparency are baked
+into the PNGs, the asset has no template-rendering intent, and the view uses original-color rendering.
+Otherwise the label selects `MenuBarIcon` with template rendering so macOS keeps its normal
+adaptive light/dark menu-bar appearance.
+
+The indicator does not read notification state, Codex state, or the hidden-row presentation list. Its
+accessibility label/value say only `VibeMenu` and `Normal` or `Needs attention`; no session metadata is
+exposed. No second normal icon, animation, timer, approval inference, or change to the existing Deny
+limitation was added.
