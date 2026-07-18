@@ -153,12 +153,21 @@ public struct CodexSession: Equatable, Sendable, Identifiable {
     public let title: String?
 
     /// When Codex started the session — the real `session_meta.timestamp` from the rollout (not a
-    /// first-observed time, so it survives an app restart). Drives the active row's elapsed timer.
+    /// first-observed time, so it survives an app restart). Retained as safe session metadata; the
+    /// visible timer uses `timerStartedAt` when the model has established a turn boundary.
     public let startedAt: Date
 
     /// When the session's newest rollout line was written (its last activity). Drives the state
     /// derivation and recency sorting.
     public let lastActivity: Date
+
+    /// Whether the newest allowlisted rollout marker ended the latest turn. Kept so the observable
+    /// model can recognise a newer non-completion activity as the start of a reused turn.
+    public let endedWithCompletion: Bool
+
+    /// Start of the visible turn timer. The reader leaves this `nil`; `CodexSessionTurnStore` fills
+    /// it from the first observed activity and resets it after Done when a newer turn begins.
+    public let timerStartedAt: Date?
 
     /// The agent name — always `"Codex"`. Drives the row's agent pill so Claude and Codex rows are
     /// clearly labelled in the shared list.
@@ -171,6 +180,8 @@ public struct CodexSession: Equatable, Sendable, Identifiable {
         startedAt: Date,
         lastActivity: Date,
         title: String? = nil,
+        endedWithCompletion: Bool = false,
+        timerStartedAt: Date? = nil,
         agent: String = "Codex"
     ) {
         self.id = id
@@ -179,6 +190,8 @@ public struct CodexSession: Equatable, Sendable, Identifiable {
         self.startedAt = startedAt
         self.lastActivity = lastActivity
         self.title = title
+        self.endedWithCompletion = endedWithCompletion
+        self.timerStartedAt = timerStartedAt
         self.agent = agent
     }
 }
@@ -201,16 +214,26 @@ extension CodexSession {
         String(id.prefix(6))
     }
 
-    /// Session duration at `now` (clamped ≥ 0 for clock skew) — real wall-clock since Codex
-    /// started the session (`startedAt`), so an active row shows how long the session has run.
+    /// Session duration at `now` (clamped ≥ 0 for clock skew) — real wall-clock since the current
+    /// visible turn (`timerStartedAt`), falling back to the session start for direct values. Reused
+    /// sessions reset this base after a completion marker.
     public func elapsed(now: Date) -> TimeInterval {
-        max(0, now.timeIntervalSince(startedAt))
+        max(0, now.timeIntervalSince(timerStartedAt ?? startedAt))
     }
 
     /// A compact elapsed label for an active row (e.g. `"7s"`, `"1m 45s"`, `"1h 5m"`). Reuses the
     /// Claude radar's pure duration formatter so both providers format time identically.
     public func elapsedLabel(now: Date) -> String {
         ClaudeSession.shortDuration(elapsed(now: now))
+    }
+
+    /// Return a copy with the model-owned visible turn timer attached.
+    public func withTimerStart(_ timerStartedAt: Date?) -> CodexSession {
+        CodexSession(
+            id: id, state: state, folderName: folderName, startedAt: startedAt,
+            lastActivity: lastActivity, title: title, endedWithCompletion: endedWithCompletion,
+            timerStartedAt: timerStartedAt, agent: agent
+        )
     }
 }
 

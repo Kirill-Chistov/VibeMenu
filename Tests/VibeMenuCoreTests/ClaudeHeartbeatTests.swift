@@ -578,6 +578,229 @@ struct ClaudeHeartbeatScriptTests {
         return dir
     }
 
+    /// Read back only the safe heartbeat record fields through VibeMenu's parser.
+    private func readRecord(session: String, dir: URL) throws -> ClaudeHeartbeatRecord {
+        let data = try Data(contentsOf: dir.appendingPathComponent("\(session).json"))
+        return try #require(ClaudeHeartbeatRecord.decode(from: data))
+    }
+
+    /// Run one sanitized synthetic hook event and return the resulting safe record.
+    @discardableResult
+    private func runEvent(
+        _ event: String, session: String = "latch-session", dir: URL
+    ) throws -> ClaudeHeartbeatRecord {
+        let payload = "{\"session_id\":\"\(session)\",\"hook_event_name\":\"\(event)\"}"
+        #expect(try run(stdin: payload, dir: dir) == 0)
+        return try readRecord(session: session, dir: dir)
+    }
+
+    /// Exercise a completed turn through the real hook, then prove a late event remains a quiet
+    /// no-op at the Session Radar, automation, timer, and notification layers.
+    private func assertTrailingEventIsSuppressed(
+        after finish: String, trailing: String
+    ) throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let initial = try runEvent("PreToolUse", dir: dir)
+        var store = ClaudeSessionStore()
+        store.update(records: [initial], processPresent: true, now: initial.updatedAt)
+        var tracker = AttentionTransitionTracker()
+        #expect(tracker.updateClaude(store.sessions).isEmpty)
+
+        let finished = try runEvent(finish, dir: dir)
+        store.update(
+            records: [finished], processPresent: true,
+            now: finished.updatedAt.addingTimeInterval(1)
+        )
+        #expect(store.sessions[0].state == .done)
+        #expect(!store.sessions[0].state.showsElapsedTimer)
+        #expect(store.keepAwakeIntent == .release)
+        #expect(tracker.updateClaude(store.sessions).count == 1)
+        let completedTurnStart = store.sessions[0].startedAt
+
+        let trailingRecord = try runEvent(trailing, dir: dir)
+        // The latch leaves both safe generation fields untouched, including same-second events.
+        #expect(trailingRecord.event == finished.event)
+        #expect(trailingRecord.updatedAt == finished.updatedAt)
+
+        store.update(
+            records: [trailingRecord], processPresent: true,
+            now: trailingRecord.updatedAt.addingTimeInterval(2)
+        )
+        #expect(store.sessions[0].state == .done)
+        #expect(!store.sessions[0].state.showsElapsedTimer)
+        #expect(store.sessions[0].startedAt == completedTurnStart)
+        #expect(store.keepAwakeIntent == .release)
+        #expect(ClaudeActivityState.automationIntent(
+            heartbeats: [trailingRecord],
+            signals: ClaudeActivitySignals(processPresent: true, mostRecentSessionActivity: nil),
+            now: trailingRecord.updatedAt.addingTimeInterval(2)
+        ) == .release)
+        #expect(tracker.updateClaude(store.sessions).isEmpty)
+    }
+
+    /// Write a minimal safe heartbeat fixture with a deterministic timestamp, for the explicit
+    /// same-second latch test. No transcript or hook payload data is involved.
+    private func writeSafeRecord(
+        event: String, updatedAt: TimeInterval, session: String, dir: URL
+    ) throws {
+        let data = Data(
+            "{\"schemaVersion\":2,\"updatedAt\":\(updatedAt),\"event\":\"\(event)\",\"sessionID\":\"\(session)\",\"project\":\"\"}\n"
+                .utf8
+        )
+        try data.write(to: dir.appendingPathComponent("\(session).json"), options: .atomic)
+    }
+
+    @Test("Stop -> PostToolUse remains Done with no timer, reacquire, or notification")
+    func stopThenPostToolUseIsSuppressed() throws {
+        try assertTrailingEventIsSuppressed(after: "Stop", trailing: "PostToolUse")
+    }
+
+    @Test("Stop -> SubagentStop remains Done with no timer, reacquire, or notification")
+    func stopThenSubagentStopIsSuppressed() throws {
+        try assertTrailingEventIsSuppressed(after: "Stop", trailing: "SubagentStop")
+    }
+
+    @Test("StopFailure -> trailing work remains Done")
+    func stopFailureThenTrailingWorkIsSuppressed() throws {
+        try assertTrailingEventIsSuppressed(after: "StopFailure", trailing: "PreToolUse")
+    }
+
+    @Test("Same-second trailing events preserve the completed generation")
+    func sameSecondTrailingEventIsSuppressed() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        try writeSafeRecord(event: "Stop", updatedAt: 6_000_000, session: "same-second", dir: dir)
+        let suppressed = try runEvent("SubagentStop", session: "same-second", dir: dir)
+        #expect(suppressed.event == .stop)
+        #expect(suppressed.updatedAt == Date(timeIntervalSince1970: 6_000_000))
+    }
+
+    @Test("Repeated Stop and StopFailure events are idempotent")
+    func repeatedFinishesAreIdempotent() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let stop = try runEvent("Stop", session: "stop-session", dir: dir)
+        let repeatedStop = try runEvent("Stop", session: "stop-session", dir: dir)
+        let repeatedFailure = try runEvent("StopFailure", session: "stop-session", dir: dir)
+        #expect(repeatedStop == stop)
+        #expect(repeatedFailure == stop)
+
+        let failure = try runEvent("StopFailure", session: "failure-session", dir: dir)
+        let repeatedFailureOnly = try runEvent(
+            "StopFailure", session: "failure-session", dir: dir
+        )
+        let repeatedStopAfterFailure = try runEvent(
+            "Stop", session: "failure-session", dir: dir
+        )
+        #expect(repeatedFailureOnly == failure)
+        #expect(repeatedStopAfterFailure == failure)
+    }
+
+    @Test("Stop -> UserPromptSubmit -> PreToolUse starts a new turn")
+    func promptBoundaryBeginsNewTurn() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let stop = try runEvent("Stop", dir: dir)
+        var store = ClaudeSessionStore()
+        store.update(records: [stop], processPresent: true, now: stop.updatedAt)
+        #expect(store.sessions[0].state == .done)
+        var tracker = AttentionTransitionTracker()
+        #expect(tracker.updateClaude(store.sessions).isEmpty)
+
+        let prompt = try runEvent("UserPromptSubmit", dir: dir)
+        store.update(
+            records: [prompt], processPresent: true,
+            now: prompt.updatedAt.addingTimeInterval(5)
+        )
+        #expect(store.sessions[0].state == .working)
+        #expect(store.sessions[0].startedAt == prompt.updatedAt)
+        #expect(store.sessions[0].elapsed(now: prompt.updatedAt.addingTimeInterval(5)) == 5)
+
+        let preTool = try runEvent("PreToolUse", dir: dir)
+        store.update(
+            records: [preTool], processPresent: true,
+            now: preTool.updatedAt.addingTimeInterval(6)
+        )
+        #expect(store.sessions[0].state == .working)
+        #expect(store.sessions[0].startedAt == prompt.updatedAt)
+        #expect(store.sessions[0].elapsed(now: prompt.updatedAt.addingTimeInterval(6)) == 6)
+        #expect(tracker.updateClaude(store.sessions).isEmpty)
+
+        let finished = try runEvent("Stop", dir: dir)
+        store.update(
+            records: [finished], processPresent: true,
+            now: finished.updatedAt.addingTimeInterval(1)
+        )
+        #expect(store.sessions[0].state == .done)
+        #expect(!store.sessions[0].state.showsElapsedTimer)
+        #expect(tracker.updateClaude(store.sessions).count == 1)
+    }
+
+    @Test("Stop -> PermissionRequest -> PostToolUse is one new approval turn, then Done")
+    func permissionBoundaryBeginsAndPreservesNewTurn() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let stop = try runEvent("Stop", dir: dir)
+        var store = ClaudeSessionStore()
+        store.update(records: [stop], processPresent: true, now: stop.updatedAt)
+        var tracker = AttentionTransitionTracker()
+        #expect(tracker.updateClaude(store.sessions).isEmpty)
+
+        let request = try runEvent("PermissionRequest", dir: dir)
+        store.update(
+            records: [request], processPresent: true,
+            now: request.updatedAt.addingTimeInterval(4)
+        )
+        #expect(store.sessions[0].state == .permissionRequested)
+        #expect(store.sessions[0].startedAt == request.updatedAt)
+        #expect(store.sessions[0].elapsed(now: request.updatedAt.addingTimeInterval(4)) == 4)
+        #expect(tracker.updateClaude(store.sessions).count == 1)
+
+        let postTool = try runEvent("PostToolUse", dir: dir)
+        store.update(
+            records: [postTool], processPresent: true,
+            now: postTool.updatedAt.addingTimeInterval(5)
+        )
+        #expect(store.sessions[0].state == .working)
+        #expect(store.sessions[0].startedAt == request.updatedAt)
+        #expect(store.sessions[0].elapsed(now: request.updatedAt.addingTimeInterval(5)) == 5)
+        #expect(tracker.updateClaude(store.sessions).isEmpty)
+
+        let finished = try runEvent("Stop", dir: dir)
+        store.update(
+            records: [finished], processPresent: true,
+            now: finished.updatedAt.addingTimeInterval(1)
+        )
+        #expect(store.sessions[0].state == .done)
+        #expect(!store.sessions[0].state.showsElapsedTimer)
+        #expect(tracker.updateClaude(store.sessions).count == 1)
+    }
+
+    @Test("Stop -> SessionEnd remains terminal")
+    func sessionEndRemainsTerminalAfterFinish() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let stop = try runEvent("Stop", dir: dir)
+        var store = ClaudeSessionStore()
+        store.update(records: [stop], processPresent: true, now: stop.updatedAt)
+        let end = try runEvent("SessionEnd", dir: dir)
+        #expect(end.event == .sessionEnd)
+        store.update(
+            records: [end], processPresent: true,
+            now: end.updatedAt.addingTimeInterval(2)
+        )
+        #expect(store.sessions[0].state == .done)
+        #expect(!store.sessions[0].state.showsElapsedTimer)
+        #expect(store.keepAwakeIntent == .release)
+    }
+
     /// 12. The script writes **only** the five allowed fields (schema 2), with correct values,
     ///     and exits 0. `project` is the final path component of `cwd` — the folder name only.
     @Test func writesOnlyAllowedFields() throws {

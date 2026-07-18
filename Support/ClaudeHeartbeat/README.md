@@ -44,6 +44,11 @@ never override the top-level values. It always exits `0`, so it can never block 
 Claude session (on invalid JSON — or if `/usr/bin/python3` is missing or not executable — it
 records a safe `unknown` event rather than guessing).
 
+After a `Stop` or `StopFailure`, the script deliberately keeps that completed-turn heartbeat when
+late work/lifecycle hooks arrive. Only `UserPromptSubmit`, a new-turn `PermissionRequest`, or
+`SessionEnd` replaces the latched finish. This prevents a trailing `SubagentStop`/tool event from
+turning one completed turn into a new Quiet/Working timer while preserving reused-session turns.
+
 > **Upgrading from an earlier (schema-1) hook?** Just re-copy this script over your old copy
 > — no settings change is needed. Sessions started before the upgrade have no `project` field
 > and show as `Claude session` until they run again under the new script.
@@ -146,9 +151,10 @@ ls -la ~/Library/Application\ Support/VibeMenu/ClaudeHeartbeat/sessions/
 cat ~/Library/Application\ Support/VibeMenu/ClaudeHeartbeat/sessions/*.json
 ```
 
-You should see a file per active session, its `event` changing as you work
+You should see a file per active session, its accepted `event` changing as you work
 (`UserPromptSubmit`/`PreToolUse`/`PostToolUse` while Claude works → `Stop` when it
-finishes and waits), and a `project` set to the session's folder name (e.g. `VibeMenu`).
+finishes and waits; late events from that completed turn do not replace `Stop`), and a `project`
+set to the session's folder name (e.g. `VibeMenu`).
 
 In VibeMenu's menu, the Session Radar shows one row per live session, labelled with that folder
 name (or the session's title when one is readable) and reading **Working** while Claude works,

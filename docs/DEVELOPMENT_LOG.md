@@ -3826,3 +3826,145 @@ install the block, trigger a rate-limit/overload finish, and watch the heartbeat
 the radar row, and `pmset -g assertions`.
 
 **Next step.** Owner review; optional live confirmation via the experiment above. Not committed.
+
+## 2026-07-17 — Attention v1
+
+Implemented the approved option-1 slice: one default-off Agent notifications toggle, transition-only
+Claude approval/Done and Codex Done notifications, reusable-turn timer resets, and provider-level
+Claude Desktop / ChatGPT activation from both rows and notification clicks. Added the pure transition
+and timer tests plus `docs/decisions/0020-attention-v1.md`. The pre-existing `docs/AGENT_CONTEXT.md`
+and `docs/research/` changes were preserved untouched.
+
+Validation run:
+
+- `swift build` → `Build complete! (5.20s)`.
+- `swift test --filter AttentionTests` → **9 tests in 1 suite passed**.
+- `scripts/test.sh` → **579 tests in 90 suites passed**.
+- `xcodebuild -project App/VibeMenu.xcodeproj -scheme VibeMenu -configuration Debug -derivedDataPath ./.derivedData build` → **BUILD SUCCEEDED** (Xcode emitted only its existing multiple-destination warning).
+- `git diff --check` → clean.
+- Launched the Debug app; the built plist reports `LSUIElement = true`, `agentNotifications = 0`, and the local provider plists report `com.anthropic.claudefordesktop` and `com.openai.codex`.
+
+During implementation, compilation exposed and fixed the expected macOS adapter issues: the
+notification delegate now inherits `NSObject`, the static routing key is explicitly nonisolated, and
+the notification response completion handler is called before the main-actor activation task. No
+network, transcript reads, new dependency, Accessibility automation, private API, root, or power-loop
+change was added.
+
+Not verified live: the macOS permission prompt/actual delivery, real Claude and Codex reusable turns,
+provider activation from a row or notification, and drag-vs-tap behavior in the menu UI. The
+computer-use accessibility inspection timed out on this menu-bar-only app. The pure transition,
+timer, permission-gate, provider-target, ordering, dismissal, overflow, state-derivation, and
+sleep-prevention tests passed. Recommended next step: owner smoke-test one reusable turn in each
+provider with notifications explicitly enabled, then click a row and notification.
+
+## 2026-07-17 — Independent Attention v1 review: generation-aware deduplication
+
+**Review result.** Confirmed the primary blocker in the uncommitted implementation: the attention
+tracker compared only derived display state. That could notify on a same-heartbeat Working → Done
+reclassification and could miss a newer Claude completion, Claude permission request, or Codex
+completion when polling observed the same target state twice.
+
+**Correction.** `AttentionTransitionTracker` now compares safe activity generations: Claude
+`lastEventAt`; Codex `lastActivity` plus the allowlisted `task_complete` marker. Repeated identical
+timestamps/markers stay silent. The first snapshot per provider remains a silent baseline; after that,
+a newly appearing target-state session can notify. The explicit Codex “Track Codex sessions” setting
+resets that provider baseline on disable/re-enable, so its first subsequent snapshot is silent without
+silently suppressing ordinary new sessions. Notification payload routing remains provider-only, and
+the existing safe display name is the only human-readable field. Timer-reset and sleep-prevention
+paths remain separate from notification tracking.
+
+**Validation run.** `swift test --filter AttentionTests` → **16 tests in 1 suite passed**; `swift build`
+→ **Build complete!**; `scripts/test.sh` → **586 tests in 90 suites passed**; `xcodebuild -project
+App/VibeMenu.xcodeproj -scheme VibeMenu -configuration Debug -derivedDataPath ./.derivedData build`
+→ **BUILD SUCCEEDED**; `git diff --check` → clean. The Xcode build emitted its existing multiple-
+destination warning and a non-fatal AppIntents metadata warning; no build/test failures occurred.
+
+**Gesture/privacy/manual boundary.** SwiftUI's simultaneous-gesture composition could let the tap and
+drag recognizers succeed independently, so both rows now use an exclusive tap-before-drag composition;
+a drag-to-hide cannot also activate its provider through this gesture path. The context menu remains a
+separate secondary-click path. Manual verification is still required for drag-to-hide vs. plain click,
+right-click hide, actual notification permission/delivery, provider activation, and real reusable
+Claude/Codex turns. No app launch is claimed from this review. The earlier implementation entry's
+launch/plist observation remains explicitly separate from these unverified live behaviors.
+
+**Next step.** Owner smoke-test the manual checklist, then review the focused uncommitted diff. No
+commit or push was performed; unrelated `docs/AGENT_CONTEXT.md` and `docs/research/` work was preserved.
+
+## 2026-07-17 — Attention v1 completion and reusable-turn correction
+
+Fixed the remaining Attention v1 behavior without changing the app-side notification or activation
+surface. Claude notification generations are now the safe heartbeat timestamp plus normalized event;
+same-event reclassification is silent, while a same-second `UserPromptSubmit` → `Stop` replacement is
+a completion generation. Claude finished notifications require `Stop` or `StopFailure`; bare
+`SessionStart`, process/age-derived Done, and silence do not notify. Same-second latest-record
+selection prefers a finish/approval event over an older work/lifecycle classification. Genuine
+`Stop`/`StopFailure` session rows become Done before process/age checks, so the next normal refresh
+removes the timer and releases the existing Claude automation intent. Claude reusable-turn timing now
+starts a new Done/Stale/Unknown → `PermissionRequest` turn at the request timestamp, preserves that
+start after approval resumes work, and does not reset an already-running turn's original start.
+
+Validation run:
+
+- `swift test --filter AttentionTests` → **24 tests in 1 suite passed**.
+- `swift test --filter ClaudeHeartbeatTests` → **55 tests in 6 suites passed**.
+- `swift test --filter ClaudeSessionTests` → **68 tests in 6 suites passed**.
+- `swift build` → **Build complete! (0.22s)**.
+- `scripts/test.sh` → **594 tests in 90 suites passed**.
+- `xcodebuild -project App/VibeMenu.xcodeproj -scheme VibeMenu -configuration Debug -derivedDataPath ./.derivedData build` → **BUILD SUCCEEDED**; Xcode emitted its existing multiple-destination warning and the non-fatal AppIntents metadata warning.
+- `git diff --check` → clean.
+
+The first focused run exposed and fixed a test-fixture error: the immediate-finish test advanced past
+the unchanged 30-minute prune horizon. The existing StopFailure test also still expected an old
+process/age degradation to Stale; it now asserts the requested unconditional Done finish behavior.
+
+Manual safe-field check: the installed heartbeat directory contained only `SessionEnd` records and
+one historical `Stop` record at inspection time; no `StopFailure` or live Working/Quiet → Stop sequence
+was available. No real Claude turn, notification permission/delivery, provider activation, or row
+gesture smoke test was claimed. No hook configuration was modified. No transcript content, prompt,
+response, tool, error, path, repository URL, or session ID was inspected or logged.
+
+**Next step.** Owner smoke-test one real Claude turn with the existing hook configured and notifications
+explicitly enabled, inspecting only `event`/`updatedAt`, then verify the one notification and provider
+activation manually. No commit or push was performed.
+
+## 2026-07-18 — Claude completion latch
+
+Confirmed the remaining Claude-only Attention v1 failure at the safe heartbeat boundary. A real
+subagent turn produced `UserPromptSubmit → PreToolUse → SubagentStart → SubagentStop → PostToolUse →
+Stop → SubagentStop`; the trailing `SubagentStop` replaced the genuine finish in the old hook, and
+because it is work-like but not display-active, the row was reclassified as Quiet with a new timer.
+The hook now reads only the previous VibeMenu-owned safe `event` and, after `Stop`/`StopFailure`,
+ignores all repeated/trailing events except `UserPromptSubmit`, `PermissionRequest`, and `SessionEnd`.
+The safe heartbeat schema and all Codex paths are unchanged.
+
+Validation run:
+
+- `swift test --filter ClaudeHeartbeatScriptTests` → **16 tests passed**.
+- `swift build` → **Build complete!**
+- `scripts/test.sh` → **602 tests in 90 suites passed**.
+- `xcodebuild -project App/VibeMenu.xcodeproj -scheme VibeMenu -configuration Debug -derivedDataPath ./.derivedData build` → **BUILD SUCCEEDED**; existing multiple-destination and non-fatal AppIntents metadata warnings only.
+- `/bin/sh -n Support/ClaudeHeartbeat/vibemenu-claude-hook.sh` → clean.
+- `git diff --check` → clean after the final documentation updates.
+
+Manual result:
+
+- The pre-fix live capture reproduced the exact late-event sequence above using only normalized event
+  and `updatedAt` output.
+- The local VibeMenu-owned hook copy was synchronized to the patched repository hook without editing
+  `~/.claude/settings.json`. A second real subagent turn then produced
+  `UserPromptSubmit → PreToolUse → SubagentStart → SubagentStop → PostToolUse → Stop`; no later safe
+  heartbeat replacement appeared during the capture window, and the final safe event remained `Stop`.
+- The Debug app was launched from `./.derivedData/Build/Products/Debug/VibeMenu.app`; its process and
+  built plist were present with `LSUIElement = true`.
+- The menu-bar-only row/timer view, notification delivery, row/notification activation, and exact
+  one-notification live delivery could not be observed because the local accessibility surface
+  exposes no VibeMenu menu window and notifications are opt-in. Pure transition, timer, sleep-intent,
+  and notification-generation tests passed. The heartbeat capture read and emitted only normalized
+  event/`updatedAt` fields; no transcript content, prompt, response, tool data, path, or session
+  content was read from the heartbeat files or logged.
+
+The initial focused run exposed two timestamp-relative test assertions and they were corrected to
+measure elapsed time from the retained `UserPromptSubmit`/`PermissionRequest` turn start. No source
+behavior or user settings were changed by those fixes. Recommended next step: owner manually click a
+visible Session Radar row and, if notifications are enabled, one Done notification to verify provider
+activation on this menu-bar-only build. No commit or push was performed.

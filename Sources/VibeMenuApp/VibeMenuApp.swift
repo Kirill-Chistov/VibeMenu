@@ -2,6 +2,7 @@ import AppKit
 import Observation
 import ServiceManagement
 import SwiftUI
+import UserNotifications
 import VibeMenuCore
 
 /// Real `LoginItemControlling` backend over the **public** `SMAppService.mainApp`
@@ -29,6 +30,180 @@ final class SMAppServiceLoginItemController: LoginItemControlling {
 
     func unregister() throws {
         try SMAppService.mainApp.unregister()
+    }
+}
+
+/// Provider-level activation adapter for Attention v1. It uses only public AppKit APIs and never
+/// attempts to identify a thread, conversation, project, or window. A missing bundle URL or a
+/// failed activation is intentionally ignored — a row/notification click must never guess or touch
+/// another application.
+@MainActor
+final class ProviderApplicationActivator {
+    private let workspace: NSWorkspace
+
+    init(workspace: NSWorkspace = .shared) {
+        self.workspace = workspace
+    }
+
+    func activate(_ provider: AttentionProvider) {
+        let bundleIdentifier = provider.applicationBundleIdentifier
+        guard let applicationURL = workspace.urlForApplication(
+            withBundleIdentifier: bundleIdentifier
+        ) else {
+            return
+        }
+
+        if let running = NSRunningApplication.runningApplications(
+            withBundleIdentifier: bundleIdentifier
+        ).first {
+            _ = running.activate(options: [.activateAllWindows])
+            return
+        }
+
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        workspace.openApplication(at: applicationURL, configuration: configuration) { _, _ in
+            // Provider launch errors are deliberately swallowed. The expected app was identified
+            // by its bundle id, and there is no safe fallback target to try.
+        }
+    }
+}
+
+/// App-side notification coordinator. Transition detection remains in `VibeMenuCore`; this type
+/// owns only the public macOS permission/delivery/delegate APIs and the shared provider activator.
+@MainActor
+@Observable
+final class AttentionNotificationModel: NSObject, UNUserNotificationCenterDelegate {
+    nonisolated private static let providerUserInfoKey = "vibemenu_provider"
+
+    /// Observable Settings value. It is committed only after macOS grants authorization.
+    private(set) var isEnabled: Bool
+
+    @ObservationIgnored private let center: UNUserNotificationCenter
+    @ObservationIgnored private let activator: ProviderApplicationActivator
+    @ObservationIgnored private var tracker = AttentionTransitionTracker()
+    @ObservationIgnored private var preference: AttentionNotificationPreference
+    @ObservationIgnored private var permissionRequestGeneration = 0
+
+    init(
+        center: UNUserNotificationCenter = .current(),
+        activator: ProviderApplicationActivator = ProviderApplicationActivator()
+    ) {
+        self.center = center
+        self.activator = activator
+        self.preference = AttentionNotificationPreference(
+            isEnabled: UserDefaults.standard.bool(forKey: PreferenceKey.agentNotifications)
+        )
+        self.isEnabled = preference.isEnabled
+        super.init()
+        center.delegate = self
+
+        // Reading authorization status is not a permission request. If a previously stored ON
+        // preference no longer has authorization, fail closed without prompting at launch.
+        center.getNotificationSettings { [weak self] settings in
+            guard settings.authorizationStatus == .denied
+                || settings.authorizationStatus == .notDetermined else { return }
+            Task { @MainActor [weak self] in
+                self?.disable()
+            }
+        }
+    }
+
+    /// Toggle notifications. Permission is requested only on an explicit enable action; `.alert`
+    /// is the only requested capability, so VibeMenu does not ask for sound or other behaviors.
+    func setEnabled(_ requested: Bool) {
+        permissionRequestGeneration += 1
+        let generation = permissionRequestGeneration
+        let action = preference.beginUserChange(requested: requested)
+        isEnabled = preference.isEnabled
+
+        guard action == .requestAuthorization else {
+            UserDefaults.standard.set(false, forKey: PreferenceKey.agentNotifications)
+            return
+        }
+
+        // Keep the UI off while the system prompt is unresolved. This also makes a denial return
+        // to the exact same state as an explicit off toggle.
+        center.requestAuthorization(options: [.alert]) { [weak self] granted, _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.permissionRequestGeneration == generation else { return }
+                self.preference.finishAuthorization(granted: granted)
+                self.isEnabled = self.preference.isEnabled
+                UserDefaults.standard.set(
+                    self.isEnabled, forKey: PreferenceKey.agentNotifications
+                )
+            }
+        }
+    }
+
+    /// Receive Claude state snapshots even while notifications are off. That keeps transition
+    /// state current, so turning notifications on never replays an existing Done/approval state.
+    func recordClaude(_ sessions: [ClaudeSession]) {
+        deliver(tracker.updateClaude(sessions))
+    }
+
+    /// Receive Codex state snapshots even while notifications are off. Empty snapshots when the
+    /// provider has no sessions are still ordinary snapshots; the Settings binding explicitly
+    /// resets the provider baseline for a disable/re-enable cycle.
+    func recordCodex(_ sessions: [CodexSession]) {
+        deliver(tracker.updateCodex(sessions))
+    }
+
+    /// Establish a fresh silent baseline after an explicit provider disable/re-enable action.
+    func resetProviderBaseline(_ provider: AttentionProvider) {
+        tracker.reset(provider: provider)
+    }
+
+    /// Shared by Session Radar row taps and notification clicks.
+    func activate(_ provider: AttentionProvider) {
+        activator.activate(provider)
+    }
+
+    private func disable() {
+        preference.apply(requested: false)
+        isEnabled = preference.isEnabled
+        UserDefaults.standard.set(false, forKey: PreferenceKey.agentNotifications)
+    }
+
+    private func deliver(_ events: [AttentionNotification]) {
+        for event in preference.deliverable(events) {
+            let content = UNMutableNotificationContent()
+            content.title = "\(event.provider.rawValue) — \(event.displayName)"
+            content.body = event.kind.bodyText
+            // Provider name is the only routing metadata. The random request id contains no session
+            // id, and no path/message/error/tool data enters the request or its userInfo.
+            content.userInfo = [Self.providerUserInfoKey: event.provider.rawValue]
+            let request = UNNotificationRequest(
+                identifier: UUID().uuidString,
+                content: content,
+                trigger: nil
+            )
+            center.add(request, withCompletionHandler: nil)
+        }
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let rawProvider = response.notification.request.content.userInfo[Self.providerUserInfoKey]
+            as? String
+        let provider = rawProvider.flatMap(AttentionNavigation.provider(fromNotificationValue:))
+        completionHandler()
+        Task { @MainActor [weak self] in
+            if let provider {
+                self?.activate(provider)
+            }
+        }
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner])
     }
 }
 
@@ -212,6 +387,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Owned for the app's lifetime; holds/releases the real power assertion.
     let keepAwake = PowerAssertionModel(manager: SystemPowerAssertionManager())
 
+    // Owned for the app's lifetime; establishes silent transition baselines, manages opt-in local
+    // notifications, and shares provider activation with Session Radar row clicks.
+    let attention = AttentionNotificationModel()
+
     // Owned for the app's lifetime; observes Claude detection (L1 + L2) while VibeMenu
     // runs and feeds the automatic keep-awake owner.
     //
@@ -283,13 +462,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         claude.onAutomationChange = { [keepAwake] intent in
             keepAwake.updateClaudeAutomation(intent)
         }
+        claude.onSessionsChange = { [attention] sessions in
+            attention.recordClaude(sessions)
+        }
         // Codex session activity feeds the *same* shared keep-awake decision (docs/decisions/0017,
         // Fix 1). An active Codex session holds the automatic assertion; done/idle/stale releases, and
         // when the feature is off the list is empty ⇒ `.release`, so Codex can't affect sleep. The raw
         // (un-hidden) session list is used, so hiding a row from the menu is purely display-only.
         // Deliberately conservative — see `CodexSessionActivity.automationIntent`.
-        codexSessions.onSessionsChange = { [keepAwake] sessions in
+        codexSessions.onSessionsChange = { [keepAwake, attention] sessions in
             keepAwake.updateCodexAutomation(CodexSessionActivity.automationIntent(sessions))
+            attention.recordCodex(sessions)
         }
         // Begin Claude observation at launch (not on first menu appearance). `start()` is
         // idempotent, so this can never spin up a duplicate provider timer.
@@ -320,6 +503,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 enum PreferenceKey {
     static let showClaudeStatus = "showClaudeStatus"
     static let showThermalStatus = "showThermalStatus"
+    /// Opt-in local notifications for Claude approval/completion and Codex completion. The app-side
+    /// coordinator writes this only after macOS grants permission; unset/false is the default.
+    static let agentNotifications = "agentNotifications"
     /// Opt-in **experimental** Claude usage-limits section (docs/decisions/0016-claude-usage-limits.md).
     /// Default **off** — it reads best-effort / version-fragile local Claude data, so it stays
     /// experimental and off unless the user turns it on. When off, the usage provider does no file I/O
@@ -385,7 +571,15 @@ struct VibeMenuApp: App {
         // asset lives only in the .app target; `Image(_:)` resolves it from the app
         // bundle at runtime and the string name compiles fine under plain `swift build`.
         MenuBarExtra("VibeMenu", image: "MenuBarIcon") {
-            MenuContentView(thermal: thermal, claude: appDelegate.claude, usage: appDelegate.usage, codex: appDelegate.codexSessions, codexUsage: appDelegate.codexUsage, keepAwake: appDelegate.keepAwake)
+            MenuContentView(
+                thermal: thermal,
+                claude: appDelegate.claude,
+                usage: appDelegate.usage,
+                codex: appDelegate.codexSessions,
+                codexUsage: appDelegate.codexUsage,
+                keepAwake: appDelegate.keepAwake,
+                attention: appDelegate.attention
+            )
                 // Claude observation is started at app launch (AppDelegate), so opening the
                 // menu only displays current state. Thermal is event-driven; start it when
                 // the menu first appears (idempotent, so re-appearing doesn't double-subscribe).
@@ -399,7 +593,11 @@ struct VibeMenuApp: App {
         // its lifecycle; because the app is LSUIElement/menu-bar-only, the in-menu opener
         // also activates the app so the window can come to front (see MenuContentView).
         Settings {
-            SettingsView(loginItem: appDelegate.loginItem, install: appDelegate.usageInstall)
+            SettingsView(
+                loginItem: appDelegate.loginItem,
+                install: appDelegate.usageInstall,
+                attention: appDelegate.attention
+            )
         }
     }
 }
@@ -424,6 +622,9 @@ struct MenuContentView: View {
 
     // Observable manual sleep-prevention state.
     var keepAwake: PowerAssertionModel
+
+    // Shared provider activation + notification state.
+    var attention: AttentionNotificationModel
 
     // User visibility preferences (persisted). Defaults match the spec: both rows shown.
     @AppStorage(PreferenceKey.showClaudeStatus) private var showClaudeStatus = true
@@ -545,7 +746,12 @@ struct MenuContentView: View {
             // least one visible row survives, so when there are zero visible rows the section and its
             // dividers are omitted entirely and reserve zero height — never an empty box or placeholder.
             if visibility.isClaudeRowVisible {
-                AgentSessionsSection(claude: claude, codex: codex, codexEnabled: showCodexSessions)
+                AgentSessionsSection(
+                    claude: claude,
+                    codex: codex,
+                    codexEnabled: showCodexSessions,
+                    activate: attention.activate
+                )
             }
             // Separate the section above (Limits or Session Radar) from the Thermal pressure reading
             // with the same plain divider used above Sleep prevention. Only when Thermal and at least
@@ -703,6 +909,7 @@ struct AgentSessionsSection: View {
     /// Whether Codex detection is enabled (opt-in `showCodexSessions`). When off, Codex neither
     /// contributes to the status nor shows any rows.
     let codexEnabled: Bool
+    let activate: (AttentionProvider) -> Void
 
     /// Whether the Claude "+N more recent sessions" overflow is expanded. Local + collapsed by
     /// default, so the list starts compact each time the menu opens.
@@ -741,13 +948,13 @@ struct AgentSessionsSection: View {
                 ForEach(agentList.items) { item in
                     switch item {
                     case .claude(let row):
-                        SessionRow(row: row, now: now) {
+                        SessionRow(row: row, now: now, onActivate: { activate(.claude) }) {
                             // Animate the removal; `dismiss` only hides the row in VibeMenu — it never
                             // touches Claude data or the session itself.
                             withAnimation(.easeOut(duration: 0.22)) { claude.dismiss(row.session) }
                         }
                     case .codex(let row):
-                        CodexSessionRow(row: row, now: now) {
+                        CodexSessionRow(row: row, now: now, onActivate: { activate(.codex) }) {
                             // Animate the removal; `dismiss` only hides the row in VibeMenu — it never
                             // touches Codex data, the session, or whether it prevents sleep.
                             withAnimation(.easeOut(duration: 0.22)) { codex.dismiss(row.session) }
@@ -782,7 +989,7 @@ struct AgentSessionsSection: View {
 
                     if showOverflowSessions {
                         ForEach(agentList.claudeOverflowRows) { row in
-                            SessionRow(row: row, now: now) {
+                            SessionRow(row: row, now: now, onActivate: { activate(.claude) }) {
                                 withAnimation(.easeOut(duration: 0.22)) { claude.dismiss(row.session) }
                             }
                         }
@@ -823,6 +1030,8 @@ struct AgentSessionsSection: View {
 struct SessionRow: View {
     let row: RadarRow
     let now: Date
+    /// Activates Claude Desktop on a plain click; drag and context-menu gestures remain hide-only.
+    let onActivate: () -> Void
     /// Hide this row (animated by the caller). VibeMenu-only; see the type doc.
     let onDismiss: () -> Void
 
@@ -911,21 +1120,27 @@ struct SessionRow: View {
         .offset(x: dragOffset)
         // Fade as it slides away, so a partial drag reads as "letting go will dismiss".
         .opacity(dragOffset > 0 ? Double(max(0, 1 - dragOffset / (Self.dismissThreshold * 2))) : 1)
+        // Tap and drag are mutually exclusive: a drag-to-hide can never also activate Claude Desktop.
+        // Notification clicks use the same provider callback. Keep the context menu separate below.
         .gesture(
-            DragGesture(minimumDistance: 12)
-                .onChanged { value in
-                    // Rightward only; a left drag does nothing (clamped to 0).
-                    dragOffset = max(0, value.translation.width)
-                }
-                .onEnded { value in
-                    if value.translation.width > Self.dismissThreshold {
-                        onDismiss()   // caller wraps in withAnimation; the removal transition plays
-                    } else {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                            dragOffset = 0   // too short → snap back
+            TapGesture()
+                .onEnded { onActivate() }
+                .exclusively(before:
+                    DragGesture(minimumDistance: 12)
+                        .onChanged { value in
+                            // Rightward only; a left drag does nothing (clamped to 0).
+                            dragOffset = max(0, value.translation.width)
                         }
-                    }
-                }
+                        .onEnded { value in
+                            if value.translation.width > Self.dismissThreshold {
+                                onDismiss()   // caller wraps in withAnimation; the removal transition plays
+                            } else {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                    dragOffset = 0   // too short → snap back
+                                }
+                            }
+                        }
+                )
         )
         // Reliable fallback for hiding a row if the drag gesture is unreliable in the menu window.
         .contextMenu {
@@ -964,6 +1179,8 @@ struct SessionRow: View {
 struct CodexSessionRow: View {
     let row: CodexRow
     let now: Date
+    /// Activates ChatGPT on a plain click; drag and context-menu gestures remain hide-only.
+    let onActivate: () -> Void
     /// Hide this row (animated by the caller). VibeMenu-only; see the type doc.
     let onDismiss: () -> Void
 
@@ -1027,21 +1244,27 @@ struct CodexSessionRow: View {
         .offset(x: dragOffset)
         // Fade as it slides away, so a partial drag reads as "letting go will dismiss".
         .opacity(dragOffset > 0 ? Double(max(0, 1 - dragOffset / (Self.dismissThreshold * 2))) : 1)
+        // Tap and drag are mutually exclusive: a drag-to-hide can never also activate ChatGPT.
+        // Notification clicks use the same provider callback. Keep the context menu separate below.
         .gesture(
-            DragGesture(minimumDistance: 12)
-                .onChanged { value in
-                    // Rightward only; a left drag does nothing (clamped to 0).
-                    dragOffset = max(0, value.translation.width)
-                }
-                .onEnded { value in
-                    if value.translation.width > Self.dismissThreshold {
-                        onDismiss()   // caller wraps in withAnimation; the removal transition plays
-                    } else {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                            dragOffset = 0   // too short → snap back
+            TapGesture()
+                .onEnded { onActivate() }
+                .exclusively(before:
+                    DragGesture(minimumDistance: 12)
+                        .onChanged { value in
+                            // Rightward only; a left drag does nothing (clamped to 0).
+                            dragOffset = max(0, value.translation.width)
                         }
-                    }
-                }
+                        .onEnded { value in
+                            if value.translation.width > Self.dismissThreshold {
+                                onDismiss()   // caller wraps in withAnimation; the removal transition plays
+                            } else {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                    dragOffset = 0   // too short → snap back
+                                }
+                            }
+                        }
+                )
         )
         // Reliable fallback for hiding a row if the drag gesture is unreliable in the menu window.
         .contextMenu {
@@ -1397,6 +1620,9 @@ struct SettingsView: View {
     /// Performs the opt-in, preview-gated statusLine install for usage capture (ADR 0016).
     var install: ClaudeUsageInstallModel
 
+    /// Owns the single Attention v1 notification toggle and its permission request.
+    var attention: AttentionNotificationModel
+
     @AppStorage(PreferenceKey.showClaudeStatus) private var showClaudeStatus = true
     @AppStorage(PreferenceKey.showThermalStatus) private var showThermalStatus = true
     // Opt-in enhanced titles; default off (see PreferenceKey.useDesktopTitles / ADR 0014).
@@ -1451,6 +1677,19 @@ struct SettingsView: View {
         Binding(
             get: { ClaudeUsageLimitSourceMode(rawValue: sourceModeRaw) ?? .auto },
             set: { sourceModeRaw = $0.rawValue; refreshDetection() }
+        )
+    }
+
+    /// A provider setting change is an explicit enablement/reset boundary for Attention v1. Keep
+    /// this separate from ordinary empty Codex snapshots so a later new session can notify.
+    private var codexSessionsBinding: Binding<Bool> {
+        Binding(
+            get: { showCodexSessions },
+            set: { requested in
+                guard requested != showCodexSessions else { return }
+                attention.resetProviderBaseline(.codex)
+                showCodexSessions = requested
+            }
         )
     }
 
@@ -1631,6 +1870,11 @@ struct SettingsView: View {
                 set: { loginItem.setEnabled($0) }
             ))
             SettingsRowDivider()
+            SettingsToggleRow(title: "Agent notifications", isOn: Binding(
+                get: { attention.isEnabled },
+                set: { attention.setEnabled($0) }
+            ))
+            SettingsRowDivider()
             SettingsToggleRow(title: "Thermal status", isOn: $showThermalStatus)
             SettingsRowDivider()
             // The stored key remains `showClaudeStatus` for backward compatibility (ADR 0017).
@@ -1697,7 +1941,7 @@ struct SettingsView: View {
             DisclosureGroup(isExpanded: $codexSectionExpanded) {
                 VStack(alignment: .leading, spacing: 0) {
                     SettingsRowDivider()
-                    SettingsToggleRow(title: "Track Codex sessions", isOn: $showCodexSessions)
+                    SettingsToggleRow(title: "Track Codex sessions", isOn: codexSessionsBinding)
                     SettingsRowDivider()
                     SettingsToggleRow(title: "Show usage", isOn: $showCodexLimits)
 

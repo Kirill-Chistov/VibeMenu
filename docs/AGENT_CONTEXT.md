@@ -4,10 +4,9 @@ Canonical, concise handoff for this repo. Keep this current-state focused.
 Use [`DEVELOPMENT_LOG.md`](DEVELOPMENT_LOG.md) for chronology and [`decisions/`](decisions/)
 for design decisions.
 
-> **This repo is being prepared to become the public open-source source repo. It is not public
-> yet** — making it public is a pending owner step (`RELEASE_CHECKLIST.md` Part A §6). Write
-> every commit, comment, and doc as if a stranger will read it, because one soon will. No
-> personal absolute paths, no private data, no internal-only shorthand.
+> **This is the public open-source source repository.** Treat every commit, comment, and
+> document as public: no personal absolute paths, private data, or internal-only shorthand.
+> The source on `master` is newer than the latest published binary release.
 
 ## Product summary
 
@@ -21,10 +20,9 @@ previews. It is Apache-2.0 licensed; the name, logo, and brand assets are separa
 
 ## Repository boundaries and rules
 
-- **This repo (`Kirill-Chistov/VibeMenu`) is the source repo, currently private and being
-  readied to go public.** Source, tests, support scripts, product docs, ADRs, and release
-  packaging all live here. Work relative to the repo root; never write an absolute personal path
-  into a tracked file.
+- **This public repo (`Kirill-Chistov/VibeMenu`) is the source of truth.** Source, tests,
+  support scripts, product docs, ADRs, and release packaging all live here. Work relative to
+  the repo root; never write an absolute personal path into a tracked file.
 - A separate release/marketing wrapper repo exists (`Kirill-Chistov/VibeMenu-Public`). It is
   **out of scope**: do not edit it. Its future is the owner's decision.
 - Do not commit or push unless the product owner explicitly requests it. Never rewrite history
@@ -34,9 +32,9 @@ previews. It is Apache-2.0 licensed; the name, logo, and brand assets are separa
   owner owns product, architecture, privacy, and release decisions.
 - Keep changes small and scoped. Any non-trivial product, architecture, privacy, or release
   change needs a proposal/approval and an ADR where appropriate.
-- **Everything here is about to be public.** Assume any file you touch will be read by strangers
-  evaluating whether to trust the app with their machine. Note that publishing has not happened
-  yet, so nothing may be described as already public.
+- **Everything here is public.** Assume any file you touch will be read by strangers evaluating
+  whether to trust the app with their machine. Describe repository and release state factually;
+  public source does not imply that the latest source has a matching binary release.
 
 ## Current feature set
 
@@ -54,11 +52,10 @@ previews. It is Apache-2.0 licensed; the name, logo, and brand assets are separa
   waiting/done/stale states, elapsed time, safe titles/folder names, and per-row hide.
   Claude Desktop approval prompts surface as **Needs approval** from the opt-in
   `PermissionRequest` heartbeat event; Allow clears on the next lifecycle event, while Deny
-  may linger until the next event or the 30-minute prune. Codex CLI sessions and internal
-  subagent rollouts are excluded.
-  Claude Code `StopFailure` heartbeats are recognized as finished, non-holding turns so API-error
-  completions become **Done** and release automatic sleep prevention. The installed hook registration
-  and sanitized payload path were validated; a genuine API-error event remains unobserved end-to-end.
+  may linger until the next event or the 30-minute prune. Hook users also recognize Claude
+  Code's documented `StopFailure` event as a finished, non-holding turn, so API-error endings
+  become **Done** and release sleep prevention instead of leaving the preceding work event to
+  age into **Quiet**. Codex CLI sessions and internal subagent rollouts are excluded.
 - Coarse macOS thermal state (Nominal/Fair/Serious/Critical), row visibility preferences,
   Launch at Login through public `SMAppService`, and compact Settings with Claude/Codex
   disclosures.
@@ -116,7 +113,7 @@ Run from the repo root:
 ```sh
 swift build
 scripts/test.sh
-xcodebuild -project App/VibeMenu.xcodeproj -scheme VibeMenu -configuration Debug build
+xcodebuild -project App/VibeMenu.xcodeproj -scheme VibeMenu -configuration Debug -derivedDataPath ./.derivedData build
 ```
 
 For a release candidate, also run the Release build and
@@ -127,8 +124,9 @@ test, or launch that was not actually run. Append implementation validation to
 
 ## Current ChatGPT / Claude / Codex workflow
 
-- **ChatGPT:** product-facing planning, synthesis, research, and handoff preparation. It
-  records approved direction in product docs/ADRs and does not make silent product decisions.
+- **ChatGPT planning/review chat:** product decisions, prioritization, research, compact KERNEL
+  prompts, result review, and handoff maintenance. This chat does **not** implement features or
+  fix bugs; a separate implementation chat performs repo changes and verification.
 - **Claude Code:** primary scoped implementation agent in this repo; follows
   `AGENTS.md` and `CLAUDE.md`, runs real checks, and records the result in the development log.
 - **Codex:** independent implementation or review pass on a separate branch/worktree when
@@ -154,7 +152,14 @@ when the agent can determine routine steps safely from the repo.
 
 ## Master state and important milestones
 
-- Latest committed milestone (2026-07-14): Claude Desktop **Needs approval** from the opt-in
+- Latest committed and pushed milestone (2026-07-17): `47186a6` (`Handle Claude StopFailure
+  heartbeats`) is on both `master` and `origin/master`. It adds ADR 0019 and treats Claude Code's
+  documented `StopFailure` hook as a finished, non-holding turn, fixing the API-error case where a
+  completed session could remain **Quiet** and continue holding sleep prevention. `swift build`,
+  `scripts/test.sh` (570 tests / 89 suites), the Debug app build, and `git diff --check` passed.
+  The installed hook registration and a sanitized payload were validated; a naturally occurring
+  API-error event has not yet been observed end-to-end.
+- Previous committed milestone (2026-07-14): Claude Desktop **Needs approval** from the opt-in
   `PermissionRequest` heartbeat event, including request-relative timing, attention-first sorting,
   the documented Deny limitation, tests, and ADR 0018. The preceding Trust the Run milestone remains
   `5feb643` (2026-07-12).
@@ -165,14 +170,17 @@ when the agent can determine routine steps safely from the repo.
 - The reviewed Trust the Run work, committed in `5feb643`, adds truthful assertion status and
   Manual/Claude/Codex ownership below the Sleep prevention switch. The switch remains usable during
   automation and changes only manual ownership; builds/tests passed and the owner verified the UI.
-- **Docs currentization (2026-07-15, uncommitted):** README/ROADMAP/PRODUCT/FAQ/INSTALL/PRIVACY/
-  SECURITY and the contract files were rewritten ahead of making the repo public — v0.2 and both
-  agents, ownership corrected to Kirill Chistov, signing reframed as a declined cost for the
-  current validation phase (revisitable, ADR 0004 Amendment 1), the Claude-only scope of the
-  quiet-work hold made explicit, and the stale "Claude: Active/Idle/Not detected" aggregate-row
-  wording removed (that row no longer exists; the menu shows session rows directly). For current
-  master behavior, still trust the code, latest ADRs, and the tail of `DEVELOPMENT_LOG.md` over
-  any prose.
+- **Public-source state:** the repository is public and `master` contains the current Claude +
+  Codex product, but the public release and top-level README still lag behind current source.
+  GitHub's latest published binary is v0.1.1; no v0.2 binary release exists in this source repo.
+  Until the announcement release is prepared, trust current code, latest ADRs, and the tail of
+  `DEVELOPMENT_LOG.md` over older release-facing prose.
+- **Current uncommitted Attention v1 follow-up (2026-07-18):** the Claude heartbeat hook now
+  latches a genuine `Stop`/`StopFailure` and ignores trailing work/lifecycle events until
+  `UserPromptSubmit`, a new-turn `PermissionRequest`, or `SessionEnd`. The root cause was confirmed
+  from the safe sequence `... → Stop → SubagentStop`; focused tests, the full suite, both builds,
+  and a real post-fix safe-field capture passed. The menu-bar-only row/notification click smoke
+  remains a live UI check because its accessibility surface was unavailable.
 - **Known stale:** `docs/assets/vibemenu-menu.png` is the v0.1.x menu and is deliberately not
   shown in the README until a current capture replaces it. A few source comments still describe a
   `"Claude" row` / pre-wrapper state (e.g. `ClaudeActivityModel.swift`, `Package.swift`); they are
@@ -204,9 +212,10 @@ when the agent can determine routine steps safely from the repo.
   0004 amended again.
 - A release requires human sign-off, a clean/intended source commit, matching bundle/package
   version, passing build/tests, the manual smoke checklist, and a privacy/secrets scan.
-- **Release state (2026-07-15):** source is at v0.2, but this repo's published releases stop at
-  **v0.1.1**; the v0.2 zip was published on the wrapper repo. Publishing a matching v0.2 release
-  here is an open owner task — do not describe one as existing until it does.
+- **Release state (verified 2026-07-17):** this source repository is public and GitHub's latest
+  published binary release is **v0.1.1**. `master` is materially newer (v0.2-era features plus
+  later fixes), so do not describe the current source as already shipped. The separate wrapper
+  repo remains out of scope and must not be edited without an explicit task.
 
 ## Known product direction
 
@@ -217,11 +226,25 @@ small, native, local-first, cross-agent where evidence supports it, and free of 
 message content (the one ADR-approved exception is the Claude session title record — see
 `AGENTS.md` §6).
 
-**Active milestone: Open Source Readiness / Prove the Pull — not new features.** The goal is to
-make the project legible to strangers and learn whether anyone actually wants it: accurate public
-docs, a clean repo, a current screenshot, making the repo public, a release matching the v0.2
-source, then listen via issues/discussions/stars (there is no telemetry and will be none). Do not
-start new feature work without the owner redirecting the milestone.
+**Active milestone: Pre-announcement Attention v1.** The repository is already public, but the
+large announcement and current-source binary release are intentionally waiting for one focused
+80/20 attention pass:
+
+- opt-in local notifications for meaningful transitions, initially **Needs approval** and **Done**;
+- deduplicate notifications so one state transition does not spam the user;
+- make the menu-bar state visibly indicate that a session needs attention;
+- clicking a notification or session row should bring the owning provider app forward where
+  public APIs allow it;
+- exact existing-window/thread selection is a feasibility question, not a promised v1 contract;
+- no prompt, response, tool, error, or transcript message content in notifications or navigation.
+
+Headless lid-closed work is deferred until a separate feasibility and safety investigation. It is
+not part of this milestone and must not block Attention v1 or the announcement release.
+
+`PRODUCT.md` and `ROADMAP.md` still describe native notifications, completion alerts, and terminal
+jump as excluded. Those lines are stale after the owner's 2026-07-17 redirect. The bounded Attention
+v1 decision and current Claude completion-latch follow-up are recorded in ADR 0020; this canonical
+handoff governs current work until the release-facing product docs are current.
 
 Sequence to date:
 
@@ -237,14 +260,21 @@ Sequence to date:
    the next lifecycle event. Claude Desktop emits no hook event on Deny, so a denied row may
    remain until the session's next event or the 30-minute prune. No prompt, tool, or conversation
    content is read.
-3. **Safe Unattended Runs (not started, gated):** after a separate product decision, add
-   battery/thermal keep-awake
-   guardrails with visible reasons and explicit manual-override semantics.
+3. **Attention v1 — implemented in the current worktree:** opt-in local notifications for **Needs
+   approval** and **Done**, a menu-bar attention indication, transition deduplication, reusable-turn
+   timers, provider-app activation, and the Claude completion latch. The safe heartbeat behavior is
+   verified; exact live row/notification activation remains an owner UI smoke check because this
+   menu-bar-only environment did not expose the popover to accessibility inspection. Exact
+   thread/window selection remains best-effort and evidence-gated.
+4. **Safe Unattended Runs (not started, gated):** after a separate product decision, add
+   battery/thermal keep-awake guardrails with visible reasons and explicit manual-override
+   semantics.
 
-A persistent Attention Queue, native notifications, completion alerts, stuck detection,
-additional providers, and clamshell/lid-closed support are **not approved roadmap commitments**.
-They remain evidence- or feasibility-gated follow-ons. Usage limits remain optional planning
-context, not a broad quota-dashboard strategy.
+A persistent Attention Queue and stuck detection remain out of scope. **Limited native
+notifications and completion/approval alerts are approved only as Attention v1 above**; this does
+not approve a persistent queue or broad notification system. Additional providers and headless
+clamshell/lid-closed support remain evidence- or feasibility-gated. Usage limits remain optional
+planning context, not a broad quota-dashboard strategy.
 
 Do not add agent orchestration, worktree management, transcript summaries/search, code review,
 approval actions, automatic retries, team analytics, cloud relay, fan control, a broad system

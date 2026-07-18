@@ -75,8 +75,9 @@ struct ClaudeSessionDeriveTests {
     /// bug.** A turn that ends on an API error fires `StopFailure` and, crucially, **not** `Stop`.
     /// Treated as a finish, it derives `.done` at any age with a live process — so an errored-out
     /// session reads **Done** immediately instead of sitting on **Quiet** (`.quietWorking`) until it
-    /// ages out to `.stale` ~15 minutes later. With no process it degrades `.done` (fresh) / `.stale`
-    /// (old), exactly like `Stop`. It never derives a work-holding state.
+    /// ages out to `.stale` ~15 minutes later. It remains `.done` even when process detection is
+    /// absent or the finish heartbeat is old; a genuine finish event is not silence. It never
+    /// derives a work-holding state.
     @Test func stopFailureIsDoneNotStuckOnQuiet() {
         for age in [TimeInterval(1), 60, 121, 300, 900, 901, 5000] {
             #expect(derive(.stopFailure, age: age, process: true) == .done, "stopFailure age=\(age)")
@@ -87,14 +88,14 @@ struct ClaudeSessionDeriveTests {
         #expect(derive(.postToolUse, age: 300, process: true) == .quietWorking)   // stuck-Quiet (before)
         #expect(derive(.stopFailure, age: 300, process: true) == .done)           // finished (after)
         #expect(!derive(.stopFailure, age: 300, process: true).holdsSleepPrevention)
-        // No process: parity with Stop — fresh ⇒ done, old ⇒ stale.
+        // No process: a genuine finish remains Done at any age.
         #expect(derive(.stopFailure, age: 2, process: false) == .done)
-        #expect(derive(.stopFailure, age: 121, process: false) == .stale)
+        #expect(derive(.stopFailure, age: 121, process: false) == .done)
     }
 
-    /// No visible process: a heartbeat isn't proof of life. Fresh ⇒ `.done` (finished/idle;
-    /// process detection can miss a node-hosted / just-exited CLI); older ⇒ `.stale`. Never a
-    /// high-priority state without a process.
+    /// No visible process: a work heartbeat isn't proof of life. Fresh ⇒ `.done` (finished/idle;
+    /// process detection can miss a node-hosted / just-exited CLI); older ⇒ `.stale`. Genuine
+    /// Stop/StopFailure and SessionEnd events are explicit finish evidence and remain Done.
     @Test func noProcessIsDoneThenStale() {
         #expect(derive(.preToolUse, age: 2, process: false) == .done)
         #expect(derive(.stop, age: 2, process: false) == .done)

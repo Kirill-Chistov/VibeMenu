@@ -136,8 +136,41 @@ safe_project="$(printf '%s' "$project" | tr -cd 'A-Za-z0-9 ._-' | sed 's/^ *//; 
 # Create the sessions directory as needed; bail (exit 0) if we can't.
 mkdir -p "$BASE_DIR" 2>/dev/null || exit 0
 
-updated_at="$(date +%s)"
+# A Stop/StopFailure is a completed turn, not a session-wide terminal state. Claude Code can still
+# deliver a late lifecycle/work hook for that turn (notably SubagentStop), and replacing the finish
+# heartbeat would make VibeMenu reclassify the same turn as a new Working/Quiet turn. Read only the
+# previous VibeMenu-owned safe `event` field as a completion latch. A new user prompt or a fresh
+# approval request is the only reliable reused-session boundary; SessionEnd remains terminal.
 target="$BASE_DIR/$safe_session.json"
+previous_event=""
+if [ -n "$PYTHON" ] && [ -f "$target" ]; then
+    previous_event="$($PYTHON -c '
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        data = json.load(handle)
+    event = data.get("event")
+    if isinstance(event, str):
+        print(event)
+except Exception:
+    pass
+' "$target" 2>/dev/null)"
+fi
+
+if [ "$previous_event" = "Stop" ] || [ "$previous_event" = "StopFailure" ]; then
+    case "$safe_event" in
+        UserPromptSubmit|PermissionRequest|SessionEnd)
+            # Reliable new-turn/terminal boundaries replace the latched finish record.
+            ;;
+        *)
+            # Repeated or trailing events belong to the completed turn; leave its finish and
+            # timestamp untouched so polling cannot manufacture a new timer or notification.
+            exit 0
+            ;;
+    esac
+fi
+
+updated_at="$(date +%s)"
 tmp="$BASE_DIR/.$safe_session.$$.tmp"
 
 # Write the five privacy-safe fields, then atomically move into place. `project` is the

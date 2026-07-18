@@ -401,7 +401,8 @@ extension ClaudeSessionState {
     ///     work-in-progress session reads `stale` (and the automation would have released).
     ///
     /// Rules (in order):
-    ///   1. `SessionEnd` ⇒ `.done` (explicit finish, regardless of process).
+    ///   1. `SessionEnd` and genuine turn-finish events (`Stop`/`StopFailure`) ⇒ `.done`
+    ///      immediately, regardless of age or process presence.
     ///   2. No visible `claude` process ⇒ a heartbeat is not proof of life. Fresh (≤
     ///      `activeWindow`) reads `.done` (finished/idle; process detection can miss a
     ///      node-hosted / just-exited CLI); older reads `.stale`. Never `working` without a
@@ -426,8 +427,9 @@ extension ClaudeSessionState {
     ) -> ClaudeSessionState {
         let a = max(0, age)   // clamp clock skew (future mtime) to "just now"
 
-        // 1. Explicit finish wins outright.
-        if event.isSessionEnd { return .done }
+        // 1. Explicit session/turn finishes win outright. A genuine Stop must not age into Quiet
+        // or wait for process detection to disappear before the row becomes Done.
+        if event.isSessionEnd || event.isTurnCompletionEvent { return .done }
 
         // 2. No visible process: never claim working. Brief grace as done/idle, else stale.
         guard processPresent else {
@@ -454,7 +456,7 @@ extension ClaudeSessionState {
             return a <= quietHoldCap ? .quietWorking : .stale
         }
 
-        // 5. Not working: Stop / Notification / SessionStart ⇒ a normal finished/idle turn.
+        // 5. Not working: Notification / SessionStart ⇒ a normal finished/idle turn.
         // Deliberately `.done`, not high-priority "Waiting": almost every session eventually
         // finishes and waits for the next prompt, and treating that as attention-worthy makes
         // those rows pile up and crowd out the sessions that are actually working
@@ -543,6 +545,7 @@ public struct ClaudeSessionStore: Equatable, Sendable {
     ) {
         // Dedupe to the newest record per session (reuses the detection path's helper).
         let latest = ClaudeActivityState.latestRecordPerSession(records)
+        let previousByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
 
         var nextFirstSeen: [String: Date] = [:]
         var next: [ClaudeSession] = []
@@ -561,8 +564,41 @@ public struct ClaudeSessionStore: Equatable, Sendable {
                 quietHoldCap: quietHoldCap
             )
 
-            // Preserve first-observed time across ticks; a newly-seen session starts "now".
-            let started = firstSeen[record.sessionID] ?? now
+            // Preserve the visible turn start across ordinary refreshes. A newer PermissionRequest
+            // after a completed/stale/unknown turn starts a new turn at the request; a request during
+            // existing work keeps the original start. PermissionRequest → work is the same turn
+            // resuming after approval, so it also keeps the request-established (or original) start.
+            // A newer work event after a completed/stale/unknown state starts a fresh turn. Identical
+            // or older snapshots never reset anything.
+            let started: Date
+            if let previous = previousByID[record.sessionID] {
+                let previousStart = firstSeen[record.sessionID] ?? previous.startedAt
+                // Match Attention's safe Claude generation identity: a same-second event change is
+                // a new heartbeat generation, while a repeated event/timestamp is only a refresh.
+                let isNewer = record.updatedAt > previous.lastEventAt
+                    || (record.updatedAt == previous.lastEventAt && record.event != previous.event)
+
+                if isNewer, record.event == .permissionRequested {
+                    switch previous.state {
+                    case .done, .stale, .unknown:
+                        started = record.updatedAt
+                    case .working, .quietWorking, .permissionRequested:
+                        started = previousStart
+                    }
+                } else if isNewer, record.event.indicatesWorkInProgress,
+                          !previous.state.holdsSleepPrevention,
+                          previous.state != .permissionRequested {
+                    started = record.updatedAt
+                } else {
+                    started = previousStart
+                }
+            } else if record.event == .permissionRequested {
+                // If the app first sees an approval row, its eventual resumed turn should still be
+                // request-relative rather than starting at an arbitrary polling time.
+                started = record.updatedAt
+            } else {
+                started = now
+            }
             nextFirstSeen[record.sessionID] = started
 
             next.append(ClaudeSession(

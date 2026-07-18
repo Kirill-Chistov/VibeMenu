@@ -136,7 +136,8 @@ public final class CodexSessionReader: CodexSessionReading, @unchecked Sendable 
                 startedAt: summary.startedAt,
                 lastActivity: summary.lastActivity,
                 // Safe curated title from session_index.jsonl (already sanitised); nil ⇒ folder fallback.
-                title: titles[summary.sessionID]
+                title: titles[summary.sessionID],
+                endedWithCompletion: summary.endedWithCompletion
             )
             // A session id can appear in more than one rollout file (thread forking); keep the row
             // with the newest activity.

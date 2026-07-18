@@ -68,6 +68,10 @@ public final class ClaudeActivityModel {
     /// automatic keep-awake without ever mutating the user's manual preference.
     @ObservationIgnored public var onAutomationChange: ((ClaudeAutomationIntent) -> Void)?
 
+    /// Optional app-lifetime hook for the raw Session Radar list. Attention v1 consumes this stream
+    /// independently of the power loop so notification deduplication remains display-only.
+    @ObservationIgnored public var onSessionsChange: (([ClaudeSession]) -> Void)?
+
     public init(provider: ClaudeActivityObserving) {
         self.provider = provider
         self.state = provider.state
@@ -105,6 +109,7 @@ public final class ClaudeActivityModel {
                     // Re-apply dismissals: hidden rows stay hidden until they emit a newer
                     // event, and dismissals for pruned sessions are dropped (see `reconcile`).
                     self.visibleSessions = self.dismissed.reconcile(with: sessions)
+                    self.onSessionsChange?(sessions)
                 }
             },
             onDiagnostics: { [weak self] summary in

@@ -107,6 +107,16 @@ public enum ClaudeHeartbeatEvent: String, Codable, Equatable, Sendable, CaseIter
         }
     }
 
+    /// A genuine turn-completion heartbeat. These are the only Claude events eligible for a
+    /// finished notification; a derived `.done` caused by age, process absence, or `SessionStart`
+    /// is not completion evidence.
+    public var isTurnCompletionEvent: Bool {
+        switch self {
+        case .stop, .stopFailure: true
+        default: false
+        }
+    }
+
     /// The session has ended; its heartbeat should be excluded from detection.
     public var isSessionEnd: Bool { self == .sessionEnd }
 
@@ -155,6 +165,22 @@ public enum ClaudeHeartbeatEvent: String, Codable, Equatable, Sendable, CaseIter
             // `.stopFailure`: the turn already ended (on an API error), so — exactly like `.stop` —
             // there is no work in flight to hold for; releasing lets the Mac sleep (docs/decisions/0019).
             return false
+        }
+    }
+}
+
+fileprivate extension ClaudeHeartbeatEvent {
+    /// Deterministic tie-breaker for the hook's one-second timestamps. A same-second finish or
+    /// approval event must replace a work/lifecycle event when defensive per-session deduplication
+    /// receives both records; equal categories keep the first record.
+    var sameTimestampPrecedence: Int {
+        switch self {
+        case .sessionEnd: 4
+        case .stop, .stopFailure: 3
+        case .permissionRequested, .notification: 2
+        case .sessionStart: 0
+        case .userPromptSubmit, .preToolUse, .postToolUse,
+             .subagentStart, .subagentStop, .unknown: 1
         }
     }
 }
@@ -336,8 +362,12 @@ extension ClaudeActivityState {
     ) -> [ClaudeHeartbeatRecord] {
         var latest: [String: ClaudeHeartbeatRecord] = [:]
         for record in records {
-            if let existing = latest[record.sessionID], existing.updatedAt >= record.updatedAt {
-                continue
+            if let existing = latest[record.sessionID] {
+                if existing.updatedAt > record.updatedAt { continue }
+                if existing.updatedAt == record.updatedAt,
+                   existing.event.sameTimestampPrecedence >= record.event.sameTimestampPrecedence {
+                    continue
+                }
             }
             latest[record.sessionID] = record
         }

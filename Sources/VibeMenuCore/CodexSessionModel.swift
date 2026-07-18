@@ -147,6 +147,9 @@ public final class CodexSessionModel {
 
     @ObservationIgnored private let provider: CodexSessionObserving
     @ObservationIgnored private var isObserving = false
+    /// Model-owned visible-turn timer state. The reader remains stateless; this store is what lets
+    /// a persistent Codex session reset its displayed clock after Done → newer activity.
+    @ObservationIgnored private var turnTimers = CodexSessionTurnStore()
 
     /// Optional app-lifetime hook for **keep-awake ownership** (docs/decisions/0017, Fix 1): called on
     /// the main actor with the **raw** session list whenever it changes. The app wires this to
@@ -168,12 +171,15 @@ public final class CodexSessionModel {
         provider.start(onSessions: { [weak self] newValue in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                self.sessions = newValue
+                let timedSessions = self.turnTimers.update(
+                    newValue, previousSessions: self.sessions
+                )
+                self.sessions = timedSessions
                 // Re-apply dismissals: hidden rows stay hidden until they show newer activity, and
                 // dismissals for pruned sessions are dropped (see `reconcile`).
-                self.visibleSessions = self.dismissed.reconcile(with: newValue)
+                self.visibleSessions = self.dismissed.reconcile(with: timedSessions)
                 // Feed the raw list into the shared keep-awake decision (display-independent).
-                self.onSessionsChange?(newValue)
+                self.onSessionsChange?(timedSessions)
             }
         })
     }
