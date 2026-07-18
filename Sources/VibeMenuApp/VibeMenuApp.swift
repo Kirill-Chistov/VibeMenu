@@ -110,7 +110,9 @@ final class AttentionNotificationModel: NSObject, UNUserNotificationCenterDelega
     }
 
     /// Toggle notifications. Permission is requested only on an explicit enable action; `.alert`
-    /// is the only requested capability, so VibeMenu does not ask for sound or other behaviors.
+    /// and `.sound` are the requested authorization capabilities. Delivered notifications use
+    /// `.default`, while actual playback remains controlled by the Mac's notification, Focus,
+    /// volume, and sound settings.
     func setEnabled(_ requested: Bool) {
         permissionRequestGeneration += 1
         let generation = permissionRequestGeneration
@@ -124,7 +126,7 @@ final class AttentionNotificationModel: NSObject, UNUserNotificationCenterDelega
 
         // Keep the UI off while the system prompt is unresolved. This also makes a denial return
         // to the exact same state as an explicit off toggle.
-        center.requestAuthorization(options: [.alert]) { [weak self] granted, _ in
+        center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
             Task { @MainActor [weak self] in
                 guard let self, self.permissionRequestGeneration == generation else { return }
                 self.preference.finishAuthorization(granted: granted)
@@ -170,6 +172,7 @@ final class AttentionNotificationModel: NSObject, UNUserNotificationCenterDelega
             let content = UNMutableNotificationContent()
             content.title = "\(event.provider.rawValue) — \(event.displayName)"
             content.body = event.kind.bodyText
+            content.sound = .default
             // Provider name is the only routing metadata. The random request id contains no session
             // id, and no path/message/error/tool data enters the request or its userInfo.
             content.userInfo = [Self.providerUserInfoKey: event.provider.rawValue]
@@ -203,7 +206,7 @@ final class AttentionNotificationModel: NSObject, UNUserNotificationCenterDelega
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner])
+        completionHandler([.banner, .sound])
     }
 }
 

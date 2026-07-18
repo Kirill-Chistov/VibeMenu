@@ -3968,3 +3968,39 @@ measure elapsed time from the retained `UserPromptSubmit`/`PermissionRequest` tu
 behavior or user settings were changed by those fixes. Recommended next step: owner manually click a
 visible Session Radar row and, if notifications are enabled, one Done notification to verify provider
 activation on this menu-bar-only build. No commit or push was performed.
+
+## 2026-07-18 — Standard Attention notification sound
+
+Updated the shared Attention v1 delivery path so Claude **Needs approval**, Claude **finished**, and
+Codex **finished** notifications request `.alert` and `.sound` authorization, set
+`content.sound = .default`, and request `.banner` and `.sound` during foreground presentation.
+Actual playback remains controlled by the Mac's notification, Focus, volume, and sound settings. The
+existing single **Agent notifications** toggle, transition deduplication, provider activation,
+timers, completion latch, Codex path, gestures, dismissal, ordering, and sleep-prevention behavior
+are unchanged. No sound toggle, custom sound, sound selection, badge, grouping, reminder, or history
+behavior was added. macOS does not show the authorization prompt again after the first response, so
+a prior alerts-only authorization may require enabling VibeMenu notification sounds in macOS
+notification settings before testing.
+
+Validation run:
+
+- `swift build` → **Build complete! (3.81s)**.
+- `scripts/test.sh` → **602 tests in 90 suites passed**.
+- `xcodebuild -project App/VibeMenu.xcodeproj -scheme VibeMenu -configuration Debug -derivedDataPath ./.derivedData build` → **BUILD SUCCEEDED**; existing multiple-destination and non-fatal AppIntents metadata warnings only.
+- `git diff --check` → clean.
+
+Manual result: the Debug app was launched from `./.derivedData/Build/Products/Debug/VibeMenu.app`.
+macOS Notifications showed VibeMenu's **Allow notifications** switch on with Desktop, Notification
+Center, and Lock Screen enabled, but no VibeMenu sound control was available; this is consistent
+with the existing alerts-only authorization caveat. While the Debug app was running, a temporary
+heartbeat containing only safe synthetic `UserPromptSubmit`, `Stop`, and `SessionEnd` fields exercised
+the real Claude completion-notification path, then the heartbeat was moved to Trash. Audible playback
+was **not verified**: the current macOS authorization did not expose sound permission, and the tool
+cannot independently hear the Mac's speaker output. The **Agent notifications** preference remained
+enabled; ordinary alert notifications were not disabled because system sound was unavailable. No
+Claude settings, transcript content, or protected research files were modified. No commit or push was
+performed.
+
+**Next step.** After the owner enables VibeMenu notification sounds in macOS notification settings,
+manually confirm one visible Attention notification and its standard macOS sound with the Mac's
+notification, Focus, volume, and sound settings permitting it.

@@ -33,11 +33,14 @@ Keep transition logic pure in `VibeMenuCore` and keep macOS side effects in `Vib
   runs while notifications are disabled, so enabling them never replays an existing state; the
   explicit Codex provider setting reset establishes a new silent baseline when re-enabled.
 - Settings has one default-off **Agent notifications** toggle. `UNUserNotificationCenter` permission is
-  requested only from an explicit enable action, with `.alert` only. A denied or unresolved request
-  leaves the toggle off. Notification text is limited to the provider, the existing safe display name,
-  and `needs approval` or `finished`; identifiers are random and `userInfo` contains only the provider.
-  No sound, badge, grouping, history, session id, path, prompt, response, error, tool, or repository
-  data is added.
+  requested only from an explicit enable action, with `.alert` and `.sound`. A denied or unresolved
+  request leaves the toggle off. Notification text is limited to the provider, the existing safe display
+  name, and `needs approval` or `finished`; identifiers are random and `userInfo` contains only the
+  provider. Each delivered request sets `content.sound = .default`, and foreground presentation
+  requests `.banner` and `.sound`. Actual playback remains controlled by the Mac's notification,
+  Focus, volume, and sound settings. There is no separate sound toggle, custom sound file, sound
+  selection, badge, grouping, history, session id, path, prompt, response, error, tool, or repository
+  data.
 - Session-row tap and drag are composed as mutually exclusive gestures. A rightward drag hides the
   row without also activating Claude Desktop or ChatGPT; the right-click hide menu remains separate.
 - Claude keeps its existing request-relative Needs approval timer. A newer `PermissionRequest` after

@@ -261,11 +261,13 @@ Sequence to date:
    remain until the session's next event or the 30-minute prune. No prompt, tool, or conversation
    content is read.
 3. **Attention v1 — implemented in the current worktree:** opt-in local notifications for **Needs
-   approval** and **Done**, a menu-bar attention indication, transition deduplication, reusable-turn
-   timers, provider-app activation, and the Claude completion latch. The safe heartbeat behavior is
-   verified; exact live row/notification activation remains an owner UI smoke check because this
-   menu-bar-only environment did not expose the popover to accessibility inspection. Exact
-   thread/window selection remains best-effort and evidence-gated.
+   approval** and **Done**. Authorization requests `.alert` and `.sound`; delivered content uses
+   `.default`; foreground presentation requests `.banner` and `.sound`. Actual playback remains
+   controlled by the Mac's notification, Focus, volume, and sound settings. There is no separate
+   sound toggle or custom sound selection. The safe heartbeat behavior is verified; exact live
+   row/notification activation remains an owner UI smoke check because this menu-bar-only
+   environment did not expose the popover to accessibility inspection. Exact thread/window
+   selection remains best-effort and evidence-gated.
 4. **Safe Unattended Runs (not started, gated):** after a separate product decision, add
    battery/thermal keep-awake guardrails with visible reasons and explicit manual-override
    semantics.
