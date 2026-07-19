@@ -74,6 +74,17 @@ sufficient.
       request. Approve it; confirm the row clears once the session's **next** lifecycle event
       lands (it is not expected to clear on the click itself). *(Deny is a known upstream gap —
       ADR 0018.)*
+- [ ] **Attention icon** — while the approval is pending, confirm the menu-bar glyph switches to
+      the baked-orange attention asset at the same optical size as the normal icon; hiding the row
+      must not clear it. Confirm it returns to the normal adaptive template icon afterward.
+- [ ] **Agent notifications** *(opt-in)* — grant notification permission, trigger **Needs approval**
+      and **Done**, and confirm one local banner per meaningful transition with the system default
+      sound subject to macOS Focus/volume settings. Confirm no prompt, command, tool, or approval
+      details appear. Verify click activation only as best-effort provider foregrounding.
+- [ ] **Centralized Recent sessions** — with more than four eligible mixed Claude/Codex sessions,
+      confirm there is one provider-neutral expansion control, shared priority/recency ordering,
+      no duplicate provider-specific overflow, a maximum of ten expanded rows, and one combined
+      older remainder count.
 - [ ] **Codex sessions** *(opt-in)* — with the setting **off**, confirm no Codex rows. Turn it
       on with a Codex Desktop session active; confirm the row appears with a **Codex** pill, no
       CLI sessions appear, and an actively-working session holds the assertion.
@@ -87,13 +98,13 @@ sufficient.
       which is [not planned](decisions/0004-direct-distribution.md#amendment-1-2026-07-15--stay-unsigned-for-the-current-validation-phase);
       the Login Items fallback is the documented answer.
 
-### 6. Make the repo public & enable community features
+### 6. Public repository & community features
 
-Do this **before** publishing the release so the download and doc links resolve for testers.
+The repository is already public. Before publishing each release:
 
-- [ ] **Make the repository public** (Settings → General → Danger Zone → Change visibility).
-      Re-confirm the public-repo safety scan first: no secrets, certs, provisioning profiles,
-      or private data; `build/` and `dist/` are gitignored and untracked.
+- [ ] **Re-confirm public-repo safety** — no secrets, certs, provisioning profiles, private data,
+      personal absolute paths, or real runtime fixtures; `build/` and `dist/` remain gitignored and
+      untracked.
 - [ ] **Enable Issues** (Settings → General → Features → Issues). The bug/feature templates
       in `.github/ISSUE_TEMPLATE/` take effect once Issues is on.
 - [ ] **(Optional) Enable Discussions** (Settings → General → Features → Discussions) for
@@ -137,7 +148,8 @@ it from source (README) — same app, two commands, still unsigned.
 ### Known caveats
 - Unsigned and not notarized (Gatekeeper warning on first open) — a deliberate cost
   decision for now, not an oversight.
-- Does not prevent display sleep; no clamshell/lid-closed support.
+- Does not prevent display sleep. Headless lid-closed support is not shipped; the privileged,
+  watchdogged architecture remains under safety/security investigation.
 - Launch at Login may be unreliable on an unsigned build; the System Settings →
   Login Items fallback works.
 - "Needs approval" is Claude-only and needs the optional hook. It clears on the

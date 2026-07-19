@@ -4085,3 +4085,23 @@ research files were changed.
 **Next step.** Owner smoke-test the three icon transitions from the exact Debug artifact with one real
 Claude `PermissionRequest` and its next lifecycle event, including a hidden pending row and closed/open
 menu plus light/dark appearances when available. No commit or push was performed.
+
+
+## 2026-07-19 — Documentation synchronization and headless feasibility checkpoint
+
+Synchronized the live product, roadmap, architecture, privacy, security, installation, FAQ,
+release checklist, and canonical agent handoff with committed `master` at `3234e3a`:
+Attention v1 notifications and provider activation, completion latching, the original-color orange
+Needs approval menu-bar asset, and the centralized provider-neutral Recent sessions expansion are
+now described as committed behavior rather than uncommitted work. Product positioning now states the
+approved direction: VibeMenu is the open-source power guardian for local coding agents; agent tracking
+is a bounded sensing layer, not a broad dashboard/control-center strategy.
+
+Recorded the owner-run feasibility checkpoint without claiming a shipped feature: two short tests on
+the current Apple Silicon Mac held `SleepDisabled=1` while a process logged once per second with the
+lid closed. The largest observed execution gaps were 1s and 2s, and both runs ended with
+`SleepDisabled=0`. This proves basic CPU continuity on that machine only. Networking, real-agent
+progress, long-duration thermal behavior, global-setting ownership, helper/app crash and reboot
+cleanup, signing/notarization, and cross-model support remain unverified. No privileged helper or
+closed-lid code was added; research and the two protected untracked demand-research drafts were left
+unchanged.

@@ -96,6 +96,20 @@ event (see [`decisions/0018`](decisions/0018-needs-approval.md)).
 
 Full instructions: [`Support/ClaudeHeartbeat/README.md`](../Support/ClaudeHeartbeat/README.md).
 
+## Optional: agent notifications
+
+In **Settings…**, enable **Agent notifications** to receive local macOS notifications when a
+Claude session enters **Needs approval** or **Done**. macOS will ask for notification permission.
+VibeMenu requests alerts and the system default sound; actual delivery and playback remain under
+macOS Notification, Focus, volume, and sound settings.
+
+Notifications contain no prompt, response, command, tool, or approval-request content. Clicking a
+notification or session row brings the owning provider app forward when public macOS APIs allow it;
+selecting an exact conversation remains best-effort.
+
+While a Claude approval is pending, the menu-bar glyph turns orange independently of the
+notification setting. It returns to the normal adaptive icon when the approval state clears.
+
 ## Optional: usage limits (experimental)
 
 VibeMenu can show your **real** Claude and Codex usage limits, read **locally** — no network,
@@ -165,5 +179,7 @@ That's the complete list. For reference, everything VibeMenu can touch outside i
   a truly clean slate.
 - **A login item**, only if you turned on Launch at Login (step 2 removes it).
 
-It installs **no** privileged helper, adds no `sudoers` rule, requests no macOS permission
-prompts, and leaves nothing running once the app is quit.
+The current release installs **no** privileged helper, adds no `sudoers` rule, and leaves
+nothing running once the app is quit. It may request standard macOS notification permission if
+you enable Agent notifications. Closed-lid support is not installed or enabled today; any future
+version would require a separate, explicit helper-install and security decision.

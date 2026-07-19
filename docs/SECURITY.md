@@ -44,8 +44,10 @@ explicit review.
   ([`decisions/0013`](decisions/0013-session-title-and-dismiss.md), [`PRIVACY.md`](PRIVACY.md)).
   The two paths are independent: the heartbeat path never opens a transcript, and the title
   path never reads a heartbeat file. Widening the title read requires its own ADR.
-- **No privileged helper.** VibeMenu uses only public, non-root APIs. There is no root helper,
-  no `sudoers` rule, and no `pmset disablesleep`. It asks for no macOS permission prompts.
+- **No privileged helper in the current app.** VibeMenu currently uses only public, non-root
+  power APIs. There is no root helper, no `sudoers` rule, and no `pmset disablesleep`. The only
+  standard permission it may request today is macOS notification authorization when the user
+  enables Agent notifications.
 - **No private Apple APIs.** Only public, documented, sandbox-tolerable APIs.
 - **Opt-in readers are read-only and fail closed.** The Claude Desktop cache/title index and the
   Codex rollout/index files belong to other apps: VibeMenu opens them read-only, never writes to
@@ -53,10 +55,12 @@ explicit review.
   than guessing when a format changes. The one exception that *writes* is the Claude Code
   status-line setup, which is preview-gated, backs up `~/.claude/settings.json` first, changes
   only the `statusLine` key, and is reversible from Settings.
-- **Future clamshell mode requires separate review.** Guarded lid-closed operation is the
-  one feature that would need root / a privileged helper. It requires its own ADR, a
-  dedicated security review, and human approval before any code lands, and must ship with
-  a crash-safe watchdog that restores `disablesleep 0`. See [`ARCHITECTURE.md`](ARCHITECTURE.md).
+- **Headless closed-lid work remains separately gated.** Two short owner-run tests on the current
+  Apple Silicon Mac showed one-second user-space logging continuing while `SleepDisabled=1`, with
+  restoration to `0` afterward. This is feasibility evidence only—not a shipped feature or a
+  security approval. Any implementation still requires its own ADR, signing/notarization and
+  administrator-consent decisions, a minimal authenticated helper, independent security review,
+  battery/thermal limits, and a crash-safe expiring watchdog that restores ordinary sleep.
 - **There is no update channel.** VibeMenu does not check for, download, or install updates.
   You get new versions by downloading a release or rebuilding. If an updater is ever added it
   must use an EdDSA-signed appcast over HTTPS with a pinned public key — but none exists today,

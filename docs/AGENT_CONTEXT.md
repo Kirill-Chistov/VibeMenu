@@ -153,13 +153,15 @@ when the agent can determine routine steps safely from the repo.
 
 ## Master state and important milestones
 
-- Latest committed and pushed milestone (2026-07-17): `47186a6` (`Handle Claude StopFailure
-  heartbeats`) is on both `master` and `origin/master`. It adds ADR 0019 and treats Claude Code's
-  documented `StopFailure` hook as a finished, non-holding turn, fixing the API-error case where a
-  completed session could remain **Quiet** and continue holding sleep prevention. `swift build`,
-  `scripts/test.sh` (570 tests / 89 suites), the Debug app build, and `git diff --check` passed.
-  The installed hook registration and a sanitized payload were validated; a naturally occurring
-  API-error event has not yet been observed end-to-end.
+- Latest committed and pushed milestone (2026-07-18): `3234e3a` (`Add menu bar attention
+  indicator`) is on both `master` and `origin/master`. It adds the reactive raw-Claude approval
+  indicator: the existing adaptive template icon is used normally, while a separate original-color
+  orange asset is selected for genuine **Needs approval** state. The asset variants were normalized
+  to the normal icon's optical bounds; the owner verified the real transition and matching size.
+- The preceding Attention v1 and Recent sessions work is also committed on `master`: local Claude
+  **Needs approval**/**Done** notifications with default sound and best-effort provider activation;
+  completion latching that ignores trailing subagent events; and one provider-neutral overflow for
+  the interleaved four-row radar, revealing up to ten additional Claude/Codex rows.
 - Previous committed milestone (2026-07-14): Claude Desktop **Needs approval** from the opt-in
   `PermissionRequest` heartbeat event, including request-relative timing, attention-first sorting,
   the documented Deny limitation, tests, and ADR 0018. The preceding Trust the Run milestone remains
@@ -176,22 +178,10 @@ when the agent can determine routine steps safely from the repo.
   GitHub's latest published binary is v0.1.1; no v0.2 binary release exists in this source repo.
   Until the announcement release is prepared, trust current code, latest ADRs, and the tail of
   `DEVELOPMENT_LOG.md` over older release-facing prose.
-- **Current uncommitted Attention v1 follow-up (2026-07-18):** the Claude heartbeat hook now
-  latches a genuine `Stop`/`StopFailure` and ignores trailing work/lifecycle events until
-  `UserPromptSubmit`, a new-turn `PermissionRequest`, or `SessionEnd`. The root cause was confirmed
-  from the safe sequence `... → Stop → SubagentStop`; focused tests, the full suite, both builds,
-  and a real post-fix safe-field capture passed. The menu-bar-only row/notification click smoke
-  remains a live UI check because its accessibility surface was unavailable.
-- **Current uncommitted Recent sessions follow-up (2026-07-18):** the Session Radar now exposes one
-  provider-neutral `AgentSessionRadar.Presentation` overflow list for Claude and Codex. The primary
-  list remains capped at four; the expansion is capped at ten and reports one provider-neutral older
-  remainder. It is a bounded display expansion, not session history or a persistent queue.
-- **Current uncommitted menu-bar attention indicator (2026-07-18):** a custom `MenuBarExtra` label is
-  driven by the raw Claude session list. Any genuine `.permissionRequested` state selects the
-  separate baked-orange `MenuBarAttentionIcon` asset with original-color rendering; otherwise it
-  selects the existing `MenuBarIcon` template asset so macOS controls the normal adaptive menu-bar
-  tint. The indicator is independent of Agent notifications, hidden-row presentation, and Codex
-  state; the known Claude Deny limitation remains unchanged.
+- **Attention v1 and centralized Recent sessions are committed current behavior.** The hook latches
+  genuine `Stop`/`StopFailure` completion against trailing subagent events; notifications cover
+  Claude **Needs approval** and **Done**; the menu-bar icon turns orange for raw Claude approval
+  state; and one bounded provider-neutral expansion serves the shared Claude/Codex radar.
 - **Known stale:** `docs/assets/vibemenu-menu.png` is the v0.1.x menu and is deliberately not
   shown in the README until a current capture replaces it. A few source comments still describe a
   `"Claude" row` / pre-wrapper state (e.g. `ClaudeActivityModel.swift`, `Package.swift`); they are
@@ -237,25 +227,23 @@ small, native, local-first, cross-agent where evidence supports it, and free of 
 message content (the one ADR-approved exception is the Claude session title record — see
 `AGENTS.md` §6).
 
-**Active milestone: Pre-announcement Attention v1.** The repository is already public, but the
-large announcement and current-source binary release are intentionally waiting for one focused
-80/20 attention pass:
+**Active milestone: final standalone power-and-safety release.** Attention v1 and centralized
+Recent sessions are complete and committed. VibeMenu will not compete as a broad agent dashboard;
+agent tracking remains the bounded sensing layer for power protection, release, completion, and
+attention. The final major standalone feature under investigation is safe headless lid-closed
+operation, followed by one current-source release and a pause to measure real interest
+([ADR 0021](decisions/0021-power-guardian-direction.md)).
 
-- opt-in local notifications for meaningful transitions, initially **Needs approval** and **Done**;
-- deduplicate notifications so one state transition does not spam the user;
-- make the menu-bar state visibly indicate that a session needs attention;
-- clicking a notification or session row should bring the owning provider app forward where
-  public APIs allow it;
-- exact existing-window/thread selection is a feasibility question, not a promised v1 contract;
-- no prompt, response, tool, error, or transcript message content in notifications or navigation.
+Two owner-run 15-second tests on the current Apple Silicon Mac produced maximum
+execution gaps of 1s and 2s with `SleepDisabled=1`, and both ended with `SleepDisabled=0`. This proves
+basic CPU continuity on that machine only. Networking, real-agent progress, long-duration safety,
+helper crash/reboot recovery, global-state ownership, signing/notarization, and cross-model behavior
+remain open and must be resolved before implementation.
 
-Headless lid-closed work is deferred until a separate feasibility and safety investigation. It is
-not part of this milestone and must not block Attention v1 or the announcement release.
-
-`PRODUCT.md` and `ROADMAP.md` still describe native notifications, completion alerts, and terminal
-jump as excluded. Those lines are stale after the owner's 2026-07-17 redirect. The bounded Attention
-v1 decision and current Claude completion-latch follow-up are recorded in ADR 0020; this canonical
-handoff governs current work until the release-facing product docs are current.
+`PRODUCT.md`, `ROADMAP.md`, `FAQ.md`, `INSTALL.md`, `PRIVACY.md`, `SECURITY.md`,
+`ARCHITECTURE.md`, and `RELEASE_CHECKLIST.md` were synchronized on 2026-07-19 with committed
+Attention v1, centralized Recent sessions, the orange attention icon, and the approved power-guardian
+direction. ADR 0020 records the bounded attention behavior; ADR 0021 records the product direction.
 
 Sequence to date:
 
@@ -271,7 +259,7 @@ Sequence to date:
    the next lifecycle event. Claude Desktop emits no hook event on Deny, so a denied row may
    remain until the session's next event or the 30-minute prune. No prompt, tool, or conversation
    content is read.
-3. **Attention v1 — implemented in the current worktree:** opt-in local notifications for **Needs
+3. **Attention v1 — committed and owner-verified:** opt-in local notifications for **Needs
    approval** and **Done**. Authorization requests `.alert` and `.sound`; delivered content uses
    `.default`; foreground presentation requests `.banner` and `.sound`. Actual playback remains
    controlled by the Mac's notification, Focus, volume, and sound settings. There is no separate
@@ -281,13 +269,14 @@ Sequence to date:
    selects the baked-orange asset for a genuine Claude **Needs approval** state and otherwise keeps
    the existing template asset's normal adaptive system appearance. Exact thread/window selection
    remains best-effort and evidence-gated.
-4. **Centralized Recent sessions expansion — implemented in the current worktree:** one shared,
+4. **Centralized Recent sessions expansion — committed and owner-verified:** one shared,
    provider-neutral expansion reveals up to ten eligible Claude/Codex rows in the same ordering as the
    four-row primary list, with one combined hidden count and older remainder. This remains a bounded
    display affordance, not a history screen or persistent queue.
-5. **Safe Unattended Runs (not started, gated):** after a separate product decision, add
-   battery/thermal keep-awake guardrails with visible reasons and explicit manual-override
-   semantics.
+5. **Headless closed-lid / Safe Unattended Runs — investigation next:** research the smallest
+   signed/admin-approved helper architecture with an authenticated expiring lease, AC/battery and
+   thermal policy, crash/reboot/uninstall cleanup, global-state ownership, and a real networking +
+   agent-progress physical test. No helper code is approved yet.
 
 A persistent Attention Queue and stuck detection remain out of scope. **Limited native
 notifications and completion/approval alerts are approved only as Attention v1 above**; this does

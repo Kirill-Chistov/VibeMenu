@@ -52,6 +52,18 @@ limitations, not bugs we can fix locally; they're documented in
 
 VibeMenu never reads *what* is being approved — only that a request happened.
 
+### What notifications does VibeMenu send?
+
+When **Agent notifications** are enabled, VibeMenu can send local macOS notifications for a
+Claude session entering **Needs approval** or **Done**. They use the system default notification
+sound and contain only safe presentation metadata such as the provider and sanitized session
+name—never prompts, commands, tool input/output, responses, or approval details. Foreground banners
+and sounds still obey macOS Notification, Focus, volume, and sound settings.
+
+The menu-bar glyph also switches to orange while any raw Claude session genuinely needs approval,
+even when its row is hidden or notifications are off. Codex does not trigger that icon because it
+has no equally reliable approval signal.
+
 ### Does it prevent display sleep?
 
 **No.** VibeMenu keeps the *system* awake (so background work keeps running), but it does not
@@ -60,9 +72,15 @@ doesn't stop the run.
 
 ### Does it work with the lid closed?
 
-**No.** VibeMenu does **not** support clamshell / lid-closed mode. Closing the lid can still
-put the Mac to sleep. Guarded clamshell support is deliberately deferred (it needs extra
-safety guardrails and a privileged helper) — see the [roadmap](ROADMAP.md).
+**Not in the released app yet.** Today VibeMenu still holds only the normal, process-scoped
+idle-sleep assertion, so closing the lid can put the Mac to sleep.
+
+The owner has separately verified twice that the macOS `SleepDisabled` mechanism kept a simple
+process executing during a short lid-closed test on the current Apple Silicon Mac, and restored
+normal sleep afterward. That proves the underlying mechanism can work on that machine; it does
+not yet prove networking, sustained Claude/Codex progress, thermal safety, crash recovery, or
+support across Macs. Production support is now under architecture/security investigation and
+would require an opt-in privileged helper plus hard guardrails. See the [roadmap](ROADMAP.md).
 
 ### Does it read my Claude or Codex conversations?
 

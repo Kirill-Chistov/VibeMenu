@@ -36,10 +36,11 @@ The project is a Swift Package with clearly separated targets:
     the core, so `VibeMenuCore` stays free of `ServiceManagement`
     ([`decisions/0009-launch-at-login.md`](decisions/0009-launch-at-login.md)).
   - Owns all UI and system side effects; depends on `VibeMenuCore`.
-  - **Current status:** builds as an SPM executable (`swift build`) *and* is wrapped by a
-    launchable menu-bar `.app` (`App/VibeMenu.xcodeproj`, target `VibeMenu`) that reuses
-    this same source and links `VibeMenuCore`. UI is still v0.0 placeholders. See
-    [`decisions/0007-app-wrapper-structure.md`](decisions/0007-app-wrapper-structure.md).
+  - **Current status:** builds as an SPM executable (`swift build`) *and* as the launchable
+    menu-bar `.app` (`App/VibeMenu.xcodeproj`, target `VibeMenu`) that reuses this source and
+    links `VibeMenuCore`. The production menu includes the shared Session Radar, assertion
+    ownership, thermal state, optional limits, settings, Attention v1 notifications, and the
+    reactive normal/orange menu-bar label.
 
 - **`VibeMenuCore`** (pure library)
   - `AutomationPolicy` — the pure decision core.
@@ -244,8 +245,9 @@ project}` files, process presence, and `now`, and **does not touch the keep-awak
   written. In the UI, `SessionRow` dismisses via a native SwiftUI `DragGesture` (swipe right, with
   a `.move(edge:.trailing)` removal transition) or a `contextMenu` "Hide from VibeMenu" fallback.
 - `SessionRadar.present([ClaudeSession], now:)` — the pure **visibility + naming** projection of
-  the store's attention-first list: at most 5 rows, at most 2 `done`, hide `done` older than
-  5 min and `stale` older than 2 min, drop `unknown`, "+N more recent sessions" overflow, and a
+  the store's attention-first list: at most `maxVisibleRows` (4) rows, up to `maxDoneRows`
+  (= `maxVisibleRows`) `done`, hide `done` older than 5 min and `stale` older than 2 min, drop
+  `unknown`, a bounded "+N more recent sessions" overflow (up to `maxOverflowRows` = 10), and a
   stable numeric suffix when two visible rows share a folder name. No SwiftUI, fully unit-tested.
 - `ClaudeSessionState.derive(event:age:processPresent:)` — the pure per-session decision, using
   the **same** active window (120s) and quiet-hold cap (900s) as the automation path, so a
@@ -455,19 +457,30 @@ pre-check and shows the two real windows. It never reads the `logs_2.sqlite` deb
 prompts/auth). Codex usage limits remain strictly **display-only** (they never affect sleep); both Codex
 features are default-off, fail-closed, and version-fragile (framed Experimental).
 
-## Future: clamshell helper quarantine
+## Headless closed-lid helper quarantine
 
-Guarded lid-closed / clamshell operation is the deferred "crown jewel" (post-v0.1). It is
-the one feature that would need **root** (the kernel `SleepDisabled` flag via
-`pmset disablesleep`, or an `SMAppService`/`SMJobBless` privileged helper). Rules:
+Headless closed-lid operation is now the final major standalone feature under investigation.
+Two short owner-run tests on the current Apple Silicon Mac showed uninterrupted one-second
+logging while `SleepDisabled=1`, followed by confirmed restoration to `0`. That establishes
+basic CPU continuity on one machine only; networking, real-agent progress, long-duration thermal
+behavior, crash/reboot recovery, and cross-model support remain unverified.
 
-- It must live in a **separate, minimal, auditable helper module**, never in
-  `VibeMenuCore`.
-- It requires its own ADR, a security review, and human approval before any code lands.
-- It must ship with hard guardrails (battery floor, thermal cutoff, auto-off timer,
-  crash-safe watchdog that restores `disablesleep 0`).
+Any production implementation would still need **root** to control the global kernel
+`SleepDisabled` behavior and therefore must obey these rules:
 
-Until then, VibeMenu holds lid-open assertions only.
+- Live in a **separate, minimal, auditable helper module**, never in `VibeMenuCore`.
+- Expose only a narrow authenticated, expiring lease API—no arbitrary commands, paths, scripts,
+  or argument passthrough.
+- Keep all agent interpretation and product policy unprivileged; the helper only enforces a
+  bounded lease and safe cleanup.
+- Require its own ADR, signing/notarization and installation decision, dedicated independent
+  security review, and explicit human approval before code lands.
+- Enforce hard guardrails: AC/battery policy, battery floor, thermal cutoff, maximum duration,
+  app/helper crash handling, boot/uninstall reconciliation, and a watchdog that restores
+  `disablesleep 0` when no valid lease exists.
+- Resolve global-state ownership and coexistence with other sleep-management tools before go.
+
+Until those gates pass, VibeMenu continues to hold lid-open assertions only.
 
 ## Testing strategy
 

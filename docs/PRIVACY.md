@@ -152,6 +152,18 @@ It does **not** read *what* is being requested: not the tool, not the command, n
 the arguments — none of that leaves the payload, because the parser only ever takes the three
 top-level fields listed above. "Needs approval" means *a* request happened, nothing more.
 
+### Local attention notifications
+
+If you enable **Agent notifications**, VibeMenu asks macOS for notification permission and can
+post local notifications for Claude **Needs approval** and **Done** transitions. Notification
+content is derived only from the already-allowed safe presentation state: provider, transition,
+and sanitized session display name. It never includes prompts, responses, commands, tool
+input/output, errors, approval details, session ids, full paths, account data, or URLs.
+
+The notification is delivered through macOS locally; VibeMenu does not contact a notification
+server. Clicking it may activate the owning local provider app through public workspace APIs, but
+no conversation content is transmitted or read.
+
 ## Session Radar — session names and manual hide
 
 The Session Radar (the per-session list in the menu) is a **display-only view of the opt-in hook
@@ -192,9 +204,11 @@ does not change the keep-awake behavior.
 - **Session ids are hidden from the UI** and remain out of logs (the diagnostics/log invariant
   above is unchanged). If two visible sessions share a name, a small numeric suffix (`Greeting 1`,
   `Greeting 2`) disambiguates them — derived from ordering, not from any id or content.
-- **Bounded list.** At most 5 rows are shown (at most 2 recently-finished); finished sessions
-  older than 5 minutes and quiet/stale ones older than 2 minutes drop off, and any remaining
-  older sessions are pruned after 30 minutes.
+- **Bounded shared list.** The primary radar shows at most four interleaved Claude/Codex rows in
+  one attention/priority/recency order. One provider-neutral **Recent sessions** control can reveal
+  up to ten additional eligible rows; any older remainder is represented only as a combined count.
+  Finished sessions older than 5 minutes and quiet/stale ones older than 2 minutes drop off, and any
+  remaining older sessions are pruned after 30 minutes.
 - **Manual hide (dismiss).** You can remove a session from VibeMenu's list by dragging its row to
   the right, or via its right-click menu → **Hide from VibeMenu**. This only hides the row in
   VibeMenu — it does **not** delete any Claude data, does **not** stop or kill the Claude session,

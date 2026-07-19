@@ -43,11 +43,13 @@ It should answer three questions at a glance:
 3. **Is it safe for the Mac to keep running?** — thermal state as decision context.
 
 The sharpest wedge is the **automation loop between agent activity and power
-management**, now extended to **attention** — not system monitoring and not usage
-tracking, both of which are saturated, mostly-free, mostly-open-source spaces (Stats,
-CodexBar, etc.). VibeMenu surfaces just enough thermal/activity context to *drive and
-explain* the automation, and deliberately does not try to out-breadth a system monitor or
-a usage tracker.
+management**, now extended to **attention**. VibeMenu is the open-source power guardian for
+local coding agents: agent tracking is the sensing layer used to decide whether work still
+needs protection, whether the user is needed, and when protection should release. It is not a
+broad agent dashboard, control center, system monitor, or usage tracker.
+
+This direction is recorded in
+[`decisions/0021-power-guardian-direction.md`](decisions/0021-power-guardian-direction.md).
 
 Staying small, native, local-first, cross-agent where the evidence supports it, and **not
 reading transcript message content** is the product, not a constraint on it. (The one
@@ -83,11 +85,14 @@ The thesis is wired end-to-end:
    rather than guessing at a silence VibeMenu can't interpret.
 3. **Trust the Run** — the menu shows the *actual* assertion state, its Manual/Claude/Codex
    owners, and acquisition failure, rather than echoing the switch back at you.
-4. **Session Radar** — a per-session list for both agents (working / quiet / waiting / done
-   / stale), elapsed time, a safe name, and per-row hide.
-5. **Needs approval** — a Claude session blocked on a permission prompt sorts to the top with
-   a request-relative timer, from the opt-in `PermissionRequest` hook event
-   ([`decisions/0018`](decisions/0018-needs-approval.md)).
+4. **Session Radar** — one interleaved Claude/Codex list: four highest-priority rows, one
+   provider-neutral **Recent sessions** expansion for up to ten more, elapsed time, safe names,
+   provider pills, and per-row hide.
+5. **Attention v1** — Claude **Needs approval** and **Done** transitions can deliver opt-in local
+   notifications with the system default sound; the menu-bar glyph switches to a baked-orange
+   attention asset while any raw Claude session genuinely needs approval. Notification and row
+   clicks bring the owning provider forward where public APIs permit. No prompt, command, or tool
+   content is included ([`decisions/0020`](decisions/0020-attention-v1.md)).
 6. **Thermal pressure / status** — `ProcessInfo.thermalState` glance
    (nominal/fair/serious/critical). Public API; no exact temperatures.
 7. **Optional usage limits** — real, local, display-only, off by default, for both agents.
@@ -106,13 +111,10 @@ All local, all on public Apple APIs, no root, no private APIs, no transcript mes
 
 ## Why Session Radar exists
 
-Product research found the strongest, best-evidenced pain for agent-heavy developers is
-**agent handoff blindness** — not knowing which session is working, waiting, done, or stuck,
-especially across parallel sessions — a pain keep-awake alone does not address and that
-competitors chase mostly in the (hardware-gated) notch. So VibeMenu became a **lightweight,
-local, menu-bar agent status center**, with keep-awake as one feature rather than the whole
-product. The wedge stays the same — local-only, no network/telemetry, native, disciplined
-scope — and it is **menu-bar-first**, which reaches every Mac (no notch required).
+Session Radar exists because power automation needs a truthful, inspectable sensing layer. It
+shows which local runs are working, quiet, done, or waiting for approval so the user can understand
+why VibeMenu is holding or releasing sleep prevention. It is deliberately bounded and secondary to
+the power-and-safety loop—not the start of a broad agent dashboard or control center.
 
 The radar is a **display layer over data VibeMenu already had** — the opt-in hook heartbeat and
 allowlisted Codex metadata. It reads nothing extra and does not change the keep-awake loop
@@ -120,14 +122,17 @@ allowlisted Codex metadata. It reads nothing extra and does not change the keep-
 The pure session model is deliberately presentation-agnostic, so a future surface can reuse it
 without reshaping the core.
 
-## Deferred features (only if pulled by evidence)
+## Final standalone milestone under investigation
 
-- **Guarded lid-closed / clamshell operation** — the most differentiated behavior, but it
-  needs root/a privileged helper and carries thermal + battery risk; it ships only after
-  the lid-open loop is proven and all guardrails exist, behind its own ADR + human
-  approval.
-- **Safe unattended runs** — battery/thermal guardrails on automatic keep-awake, pending a
-  product decision on the policy.
+- **Guarded lid-closed / headless operation** — the final major standalone feature under
+  consideration. Two owner-run tests on the current Apple Silicon Mac showed uninterrupted
+  one-second logging while the lid was closed with `SleepDisabled=1`, then confirmed restoration
+  to `0`. That proves basic CPU continuity on that machine, not networking, long-duration safety,
+  crash recovery, or cross-model support. A production design still requires an opt-in privileged
+  helper, a bounded lease/watchdog, battery and thermal guardrails, signing/notarization decisions,
+  its own ADR, security review, and explicit approval.
+- **Safe unattended runs** — the battery/thermal/timeout guardrail layer required before any
+  privileged closed-lid implementation.
 - **Generalized "keep awake while X runs"** — same assertion engine, different trigger.
 - **Additional agents** — only where a privacy-safe local signal genuinely exists.
 
