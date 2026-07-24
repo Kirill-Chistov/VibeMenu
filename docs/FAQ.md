@@ -72,15 +72,18 @@ doesn't stop the run.
 
 ### Does it work with the lid closed?
 
-**Not in the released app yet.** Today VibeMenu still holds only the normal, process-scoped
-idle-sleep assertion, so closing the lid can put the Mac to sleep.
+**No.** VibeMenu holds only the normal, process-scoped idle-sleep assertion, so closing the lid can
+put the Mac to sleep. There is no clamshell/headless support and no privileged helper — v0.3 ships
+without a headless setting.
 
 The owner has separately verified twice that the macOS `SleepDisabled` mechanism kept a simple
 process executing during a short lid-closed test on the current Apple Silicon Mac, and restored
-normal sleep afterward. That proves the underlying mechanism can work on that machine; it does
-not yet prove networking, sustained Claude/Codex progress, thermal safety, crash recovery, or
-support across Macs. Production support is now under architecture/security investigation and
-would require an opt-in privileged helper plus hard guardrails. See the [roadmap](ROADMAP.md).
+normal sleep afterward. That's a historical data point: it shows the underlying mechanism can work on
+that machine, but it never proved networking, sustained Claude/Codex progress, thermal safety, crash
+recovery, or support across Macs. Lid-closed operation is out of scope for the current phase — active
+feature development is paused, and it would need its own ADR, product approval, an opt-in privileged
+helper, and hard guardrails before any such work. Whether it's ever pursued depends on real user
+demand. See the [roadmap](ROADMAP.md).
 
 ### Does it read my Claude or Codex conversations?
 

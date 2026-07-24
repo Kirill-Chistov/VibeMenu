@@ -5,7 +5,7 @@
 <p align="center"><strong>Keeps your Mac awake while a coding agent is working, and tells you when one needs you.</strong></p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/source-v0.2-blue" alt="Source: v0.2">
+  <img src="https://img.shields.io/badge/source-v0.3-blue" alt="Source: v0.3">
   <img src="https://img.shields.io/badge/platform-macOS%2015%2B%20(Apple%20Silicon)-blue" alt="Platform: macOS 15+ (Apple Silicon)">
   <img src="https://img.shields.io/badge/license-Apache--2.0-green" alt="License: Apache-2.0">
   <img src="https://img.shields.io/badge/build-unsigned-orange" alt="Build: unsigned">
@@ -52,12 +52,16 @@ It answers three questions at a glance:
   assertion, who owns it (Manual / Claude / Codex), and when acquisition failed — rather than
   just echoing your switch back at you.
 - **One-click manual keep-awake.** Manual always wins and is never overridden by automation.
-- **Session Radar** — a compact list of recent Claude Code and Codex Desktop sessions with their
-  state (working / quiet / waiting / done / stale), elapsed time, and a safe session name. Rows
-  can be hidden; nothing is written to disk.
+- **Session Radar** — a shared **four-row** list of recent Claude Code and Codex Desktop sessions
+  with their state (working / quiet / waiting / done / stale), elapsed time, and a safe session name.
+  One centralized, provider-neutral **Recent sessions** expansion reveals additional rows. Rows can
+  be hidden; nothing is written to disk.
 - **Needs approval** *(Claude, opt-in hook)* — when Claude asks permission to run a tool, its row
-  moves to the top and shows how long it's been blocked. Requires the optional heartbeat hook.
-  See [the caveat below](#limitations).
+  moves to the top and shows how long it's been blocked, and the **menu-bar icon turns orange** for a
+  genuine approval request. Requires the optional heartbeat hook. See [the caveat below](#limitations).
+- **Attention notifications** *(Claude, opt-in)* — optional local notifications when a Claude session
+  hits **Needs approval** or is **Done**, using your Mac's own notification, Focus, and sound settings.
+  Nothing is sent anywhere.
 - **Usage limits** *(opt-in, experimental)* — your **real** Claude 5-hour/weekly usage (the same
   figures as the in-app `/usage` view) and Codex's real rate-limit windows, read **locally** from
   files those apps already wrote — **no network, no cookies, no API keys, no token estimation**.
@@ -96,8 +100,8 @@ VibeMenu is distributed directly via **GitHub Releases** — no Mac App Store or
    **Settings…** shows a settings window).
 6. Optionally open **Settings… → Launch VibeMenu at login** to start it automatically.
 
-> **Note:** the source tree here is **v0.2**; the published release may lag behind it. If you
-> want exactly what's on `master`, [build from source](#develop).
+> **Note:** each tagged release corresponds to the binary attached to it; `master` may later move
+> ahead of the latest tag. If you want exactly what's on `master`, [build from source](#develop).
 
 Full step-by-step, uninstall, the optional Claude heartbeat hook, and the opt-in usage sources:
 **[docs/INSTALL.md](docs/INSTALL.md)** · Common questions: **[docs/FAQ.md](docs/FAQ.md)**.
@@ -153,6 +157,10 @@ More detail in [docs/FAQ.md](docs/FAQ.md).
 
 ## Feedback
 
+VibeMenu does what it set out to do, so it's now in **maintenance mode**: active feature development
+is paused, and what gets fixed or explored next depends on real user demand. Bug reports and feedback
+are how you shape that.
+
 - **Bugs & feature requests →** [GitHub Issues](../../issues)
 - **Questions & ideas →** [GitHub Discussions](../../discussions)
 
@@ -174,7 +182,7 @@ xcodebuild -project App/VibeMenu.xcodeproj -scheme VibeMenu -configuration Debug
   -derivedDataPath ./.derivedData build
 
 # Package a release zip (unsigned, no notarization, no DMG)
-scripts/package-github-release.sh 0.2   # → dist/VibeMenu-v0.2-macos-arm64.zip
+scripts/package-github-release.sh 0.3   # → dist/VibeMenu-v0.3-macos-arm64.zip
 ```
 
 The built app is at `build/DerivedData/Build/Products/Release/VibeMenu.app` after packaging, or

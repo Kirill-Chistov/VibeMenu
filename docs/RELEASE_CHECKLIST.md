@@ -19,9 +19,9 @@ sufficient.
 ### 1. Clean working tree
 
 - [ ] `git status` is clean (no uncommitted changes); you're on the intended commit.
-- [ ] Decide the version, e.g. `0.2`.
+- [ ] Decide the version, e.g. `0.3`.
 - [ ] **Bundle version matches.** `App/Info.plist` `CFBundleShortVersionString` equals the
-      version you're releasing (e.g. `0.2`) and `CFBundleVersion` is set (e.g. `1`). These
+      version you're releasing (e.g. `0.3`) and `CFBundleVersion` is set (e.g. `4`). These
       are hand-maintained (`GENERATE_INFOPLIST_FILE = NO`), so bump them when the version
       changes — the packaging script only *names* the zip; it does not rewrite the plist.
       It will warn if the built bundle version does not match the requested version.
@@ -148,8 +148,9 @@ it from source (README) — same app, two commands, still unsigned.
 ### Known caveats
 - Unsigned and not notarized (Gatekeeper warning on first open) — a deliberate cost
   decision for now, not an oversight.
-- Does not prevent display sleep. Headless lid-closed support is not shipped; the privileged,
-  watchdogged architecture remains under safety/security investigation.
+- Does not prevent display sleep, and closing the lid may still let the Mac sleep — there is no
+  headless / clamshell support and no privileged helper in this build. Headless is out of scope for
+  the current phase and would need its own ADR and product approval before any such work.
 - Launch at Login may be unreliable on an unsigned build; the System Settings →
   Login Items fallback works.
 - "Needs approval" is Claude-only and needs the optional hook. It clears on the

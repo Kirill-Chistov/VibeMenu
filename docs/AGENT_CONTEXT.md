@@ -6,7 +6,7 @@ for design decisions.
 
 > **This is the public open-source source repository.** Treat every commit, comment, and
 > document as public: no personal absolute paths, private data, or internal-only shorthand.
-> The source on `master` is newer than the latest published binary release.
+> Tagged releases correspond to their attached binaries; `master` may later move ahead of the most recent tag.
 
 ## Product summary
 
@@ -33,8 +33,8 @@ previews. It is Apache-2.0 licensed; the name, logo, and brand assets are separa
 - Keep changes small and scoped. Any non-trivial product, architecture, privacy, or release
   change needs a proposal/approval and an ADR where appropriate.
 - **Everything here is public.** Assume any file you touch will be read by strangers evaluating
-  whether to trust the app with their machine. Describe repository and release state factually;
-  public source does not imply that the latest source has a matching binary release.
+  whether to trust the app with their machine. Describe repository and release state factually: a tag
+  names the exact source that produced its attached binary, and `master` may sit ahead of the latest tag.
 
 ## Current feature set
 
@@ -173,11 +173,10 @@ when the agent can determine routine steps safely from the repo.
 - The reviewed Trust the Run work, committed in `5feb643`, adds truthful assertion status and
   Manual/Claude/Codex ownership below the Sleep prevention switch. The switch remains usable during
   automation and changes only manual ownership; builds/tests passed and the owner verified the UI.
-- **Public-source state:** the repository is public and `master` contains the current Claude +
-  Codex product, but the public release and top-level README still lag behind current source.
-  GitHub's latest published binary is v0.1.1; no v0.2 binary release exists in this source repo.
-  Until the announcement release is prepared, trust current code, latest ADRs, and the tail of
-  `DEVELOPMENT_LOG.md` over older release-facing prose.
+- **Public-source state:** the repository is public, and the latest published binary release is
+  **v0.3**, cut directly from this repo via `scripts/package-github-release.sh`. Each tag corresponds
+  to its attached binary; `master` may later move ahead of the latest tag. Trust current code, the
+  latest ADRs, and the tail of `DEVELOPMENT_LOG.md` over older release-facing prose.
 - **Attention v1 and centralized Recent sessions are committed current behavior.** The hook latches
   genuine `Stop`/`StopFailure` completion against trailing subagent events; notifications cover
   Claude **Needs approval** and **Done**; the menu-bar icon turns orange for raw Claude approval
@@ -213,10 +212,10 @@ when the agent can determine routine steps safely from the repo.
   0004 amended again.
 - A release requires human sign-off, a clean/intended source commit, matching bundle/package
   version, passing build/tests, the manual smoke checklist, and a privacy/secrets scan.
-- **Release state (verified 2026-07-17):** this source repository is public and GitHub's latest
-  published binary release is **v0.1.1**. `master` is materially newer (v0.2-era features plus
-  later fixes), so do not describe the current source as already shipped. The separate wrapper
-  repo remains out of scope and must not be edited without an explicit task.
+- **Release state (v0.3):** this source repository is public and the latest published binary release
+  is **v0.3**, packaged unsigned/not-notarized from this repo. Tagged releases correspond to their
+  attached binaries; `master` may later move ahead of the latest tag. The separate wrapper repo
+  remains out of scope and must not be edited without an explicit task.
 
 ## Known product direction
 
@@ -227,23 +226,27 @@ small, native, local-first, cross-agent where evidence supports it, and free of 
 message content (the one ADR-approved exception is the Claude session title record — see
 `AGENTS.md` §6).
 
-**Active milestone: final standalone power-and-safety release.** Attention v1 and centralized
-Recent sessions are complete and committed. VibeMenu will not compete as a broad agent dashboard;
-agent tracking remains the bounded sensing layer for power protection, release, completion, and
-attention. The final major standalone feature under investigation is safe headless lid-closed
-operation, followed by one current-source release and a pause to measure real interest
+**Current posture: v0.3 shipped; active feature development paused.** Attention v1 and centralized
+Recent sessions are complete and committed, and the focused standalone power-and-attention release has
+shipped as **v0.3**. VibeMenu will not compete as a broad agent dashboard; agent tracking remains the
+bounded sensing layer for power protection, release, completion, and attention. The project is now in
+maintenance/feedback mode: bug fixes and any future work depend on actual user demand. Safe headless
+lid-closed operation was investigated but is **not built and not shipped** — it is out of scope for
+v0.3 and would need its own ADR, security review, and explicit approval before any code lands
 ([ADR 0021](decisions/0021-power-guardian-direction.md)).
 
 Two owner-run 15-second tests on the current Apple Silicon Mac produced maximum
-execution gaps of 1s and 2s with `SleepDisabled=1`, and both ended with `SleepDisabled=0`. This proves
-basic CPU continuity on that machine only. Networking, real-agent progress, long-duration safety,
-helper crash/reboot recovery, global-state ownership, signing/notarization, and cross-model behavior
-remain open and must be resolved before implementation.
+execution gaps of 1s and 2s with `SleepDisabled=1`, and both ended with `SleepDisabled=0`. This proved
+basic CPU continuity on that machine only and remains a historical data point. Networking, real-agent
+progress, long-duration safety, helper crash/reboot recovery, global-state ownership,
+signing/notarization, and cross-model behavior were never resolved; no headless implementation exists
+and none is scheduled.
 
 `PRODUCT.md`, `ROADMAP.md`, `FAQ.md`, `INSTALL.md`, `PRIVACY.md`, `SECURITY.md`,
 `ARCHITECTURE.md`, and `RELEASE_CHECKLIST.md` were synchronized on 2026-07-19 with committed
-Attention v1, centralized Recent sessions, the orange attention icon, and the approved power-guardian
-direction. ADR 0020 records the bounded attention behavior; ADR 0021 records the product direction.
+Attention v1, centralized Recent sessions, the orange attention icon, and the power-guardian
+direction, and again for the **v0.3** release (2026-07-24) to the shipped-and-paused posture. ADR 0020
+records the bounded attention behavior; ADR 0021 records the product direction.
 
 Sequence to date:
 
@@ -273,10 +276,11 @@ Sequence to date:
    provider-neutral expansion reveals up to ten eligible Claude/Codex rows in the same ordering as the
    four-row primary list, with one combined hidden count and older remainder. This remains a bounded
    display affordance, not a history screen or persistent queue.
-5. **Headless closed-lid / Safe Unattended Runs — investigation next:** research the smallest
-   signed/admin-approved helper architecture with an authenticated expiring lease, AC/battery and
-   thermal policy, crash/reboot/uninstall cleanup, global-state ownership, and a real networking +
-   agent-progress physical test. No helper code is approved yet.
+5. **Headless closed-lid / Safe Unattended Runs — investigated, not built:** the smallest
+   signed/admin-approved helper architecture (authenticated expiring lease, AC/battery and thermal
+   policy, crash/reboot/uninstall cleanup, global-state ownership, and a real networking +
+   agent-progress physical test) was scoped but never implemented. No helper code is approved, v0.3
+   ships without it, and it is revisited only if real user demand justifies it.
 
 A persistent Attention Queue and stuck detection remain out of scope. **Limited native
 notifications and completion/approval alerts are approved only as Attention v1 above**; this does

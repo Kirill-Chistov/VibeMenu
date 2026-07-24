@@ -459,11 +459,14 @@ features are default-off, fail-closed, and version-fragile (framed Experimental)
 
 ## Headless closed-lid helper quarantine
 
-Headless closed-lid operation is now the final major standalone feature under investigation.
-Two short owner-run tests on the current Apple Silicon Mac showed uninterrupted one-second
-logging while `SleepDisabled=1`, followed by confirmed restoration to `0`. That establishes
-basic CPU continuity on one machine only; networking, real-agent progress, long-duration thermal
-behavior, crash/reboot recovery, and cross-model support remain unverified.
+Headless closed-lid operation is **out of scope for v0.3 and is not built** — no privileged helper
+and no headless setting ship, and closing the lid may still sleep the Mac. Active feature development
+is paused; whether it is ever pursued depends on real user demand, and it would be a separate, gated
+effort under the rules below. Two short owner-run tests on the current Apple Silicon Mac showed
+uninterrupted one-second logging while `SleepDisabled=1`, followed by confirmed restoration to `0` —
+a historical, one-machine data point that establishes basic CPU continuity only; networking,
+real-agent progress, long-duration thermal behavior, crash/reboot recovery, and cross-model support
+were never verified.
 
 Any production implementation would still need **root** to control the global kernel
 `SleepDisabled` behavior and therefore must obey these rules:

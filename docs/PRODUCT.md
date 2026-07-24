@@ -67,7 +67,7 @@ ADR-approved exception is a session's *title* record, so a row can be named — 
   sleep accordingly. VibeMenu *does* show real usage limits, but as a small opt-in readout
   for planning — not as a competing cross-provider quota dashboard.
 
-## What is built (source at v0.2)
+## What is built (v0.3)
 
 The thesis is wired end-to-end:
 
@@ -122,17 +122,21 @@ allowlisted Codex metadata. It reads nothing extra and does not change the keep-
 The pure session model is deliberately presentation-agnostic, so a future surface can reuse it
 without reshaping the core.
 
-## Final standalone milestone under investigation
+## Out of scope for v0.3 (evidence-gated, not committed)
 
-- **Guarded lid-closed / headless operation** — the final major standalone feature under
-  consideration. Two owner-run tests on the current Apple Silicon Mac showed uninterrupted
-  one-second logging while the lid was closed with `SleepDisabled=1`, then confirmed restoration
-  to `0`. That proves basic CPU continuity on that machine, not networking, long-duration safety,
-  crash recovery, or cross-model support. A production design still requires an opt-in privileged
-  helper, a bounded lease/watchdog, battery and thermal guardrails, signing/notarization decisions,
-  its own ADR, security review, and explicit approval.
-- **Safe unattended runs** — the battery/thermal/timeout guardrail layer required before any
-  privileged closed-lid implementation.
+Active feature development is paused after v0.3; the project is in maintenance/feedback mode. The
+items below are **not built and not committed** — each would only be revisited if real user demand
+pulls for it, and each needs its own decision (the risky ones an ADR) before any code lands.
+
+- **Guarded lid-closed / headless operation** — out of scope for v0.3 and **not shipped**; closing
+  the lid may still sleep the Mac. Two owner-run tests on the current Apple Silicon Mac showed
+  uninterrupted one-second logging while the lid was closed with `SleepDisabled=1`, then confirmed
+  restoration to `0` — a one-machine historical data point that proves basic CPU continuity only, not
+  networking, long-duration safety, crash recovery, or cross-model support. Any production design
+  would still require an opt-in privileged helper, a bounded lease/watchdog, battery and thermal
+  guardrails, signing/notarization decisions, its own ADR, security review, and explicit approval.
+- **Safe unattended runs** — the battery/thermal/timeout guardrail layer that would be a prerequisite
+  if closed-lid operation were ever pursued.
 - **Generalized "keep awake while X runs"** — same assertion engine, different trigger.
 - **Additional agents** — only where a privacy-safe local signal genuinely exists.
 

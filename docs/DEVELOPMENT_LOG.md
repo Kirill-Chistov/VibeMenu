@@ -4105,3 +4105,50 @@ progress, long-duration thermal behavior, global-setting ownership, helper/app c
 cleanup, signing/notarization, and cross-model support remain unverified. No privileged helper or
 closed-lid code was added; research and the two protected untracked demand-research drafts were left
 unchanged.
+
+
+## 2026-07-24 — Prepare v0.3 release (docs/version only; feature development paused)
+
+Prepared the `v0.3` release of the standalone power-and-attention utility. Product decision: active
+feature development is now **paused**; VibeMenu enters maintenance/feedback mode, and future work
+(including any headless/lid-closed exploration) depends on actual user demand. The unfinished
+Experimental Headless Agent Runs implementation had already been removed before this release, so v0.3
+ships with **no headless setting, no privileged helper, and no closed-lid code**; closing the lid may
+still sleep the Mac.
+
+Changes were limited to release/version documentation — **no application source or test files were
+touched, and no app behavior changed**:
+
+- `App/Info.plist`: `CFBundleShortVersionString` 0.2 → **0.3**, `CFBundleVersion` 3 → **4**.
+- `README.md`: source badge → v0.3; added the shared four-row Session Radar + centralized
+  provider-neutral Recent sessions expansion, the orange menu-bar attention state, and the opt-in
+  Claude Needs approval / Done notifications to the feature list; replaced the "published release may
+  lag behind source" note with durable wording (tagged releases correspond to their attached
+  binaries, `master` may later move ahead); packaging example → 0.3; added a maintenance-mode note.
+- `docs/AGENT_CONTEXT.md`, `docs/PRODUCT.md`, `docs/ROADMAP.md`, `docs/FAQ.md`, `docs/ARCHITECTURE.md`,
+  `docs/RELEASE_CHECKLIST.md`: reframed stale "headless is the active next milestone / under
+  investigation" language and the "latest binary is v0.1.1 / release lags source" claims to the
+  shipped-and-paused v0.3 posture. Historical headless research, the owner-run `SleepDisabled` test
+  record, and ADR references (0020, 0021) were preserved as history, not erased.
+
+Verification (real output):
+
+- `swift build` → **Build complete!**
+- `scripts/test.sh` → **620 tests in 91 suites passed**.
+- `xcodebuild … -configuration Debug -derivedDataPath ./.derivedData build` → **BUILD SUCCEEDED**.
+- `xcodebuild … -configuration Release -derivedDataPath ./.derivedData-release build` → **BUILD
+  SUCCEEDED**; the built Release bundle reports `CFBundleShortVersionString=0.3` / `CFBundleVersion=4`.
+- `git diff --check` clean; exactly the eight release/version files above changed.
+- Tracked-files privacy/security scan clean: no secrets/certs/tokens, no personal absolute paths, no
+  network code (only `DispatchSourceTimer.resume()`), no headless helper / LaunchDaemon / installer,
+  and all opt-in data sources (`showCodexSessions`, `showClaudeLimits`, `showCodexLimits`,
+  `useDesktopTitles`) still default to off.
+
+`CLAUDE.md` and the two protected untracked demand-research drafts were left unchanged (the drafts are
+locally excluded via `.git/info/exclude`).
+
+**Next step / publication gate.** After committing and pushing this release commit, package with
+`scripts/package-github-release.sh 0.3` and run the owner-assisted packaged-app smoke test on the exact
+`dist/VibeMenu-v0.3-macos-arm64.zip` app. Only after that gate passes: create annotated tag `v0.3` on
+this commit, push it, and publish the GitHub Release "VibeMenu v0.3" with the archive attached. The
+release remains **unsigned and not notarized**.

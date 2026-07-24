@@ -9,7 +9,7 @@ they ship if real use pulls for them, and not otherwise.
 
 ## Where it is now
 
-**Shipped (source at v0.2):**
+**Shipped (v0.3):**
 
 - Claude Code detection (process + file metadata, plus the optional heartbeat hook) driving a
   public power assertion, with a bounded quiet-work hold (15-minute default cap). The quiet-work
@@ -29,28 +29,30 @@ they ship if real use pulls for them, and not otherwise.
   and Codex (rollout `rate_limits`), display-only and fail-closed.
 - Coarse thermal state, Launch at Login (`SMAppService`), menu-bar-only `.app` with an icon.
 
-## Current milestone — Final standalone release
+## Status — v0.3 shipped, now in maintenance
 
-VibeMenu will finish one focused power-and-safety milestone, publish a strong current-source
-release, then pause major standalone development and measure real interest.
+VibeMenu has shipped its focused standalone power-and-attention release as **v0.3**. Active feature
+development is now **paused**: the project is in maintenance/feedback mode, and further work depends on
+real user demand.
 
 See [`decisions/0021-power-guardian-direction.md`](decisions/0021-power-guardian-direction.md).
 
-- Keep agent tracking only as the sensing layer for power, completion, and attention.
-- Do not chase conversation previews, in-app approvals, dozens of providers, remote agents,
-  rich terminal navigation, orchestration, or a notch interface.
-- Investigate the smallest safe **headless closed-lid** architecture. Basic CPU continuity with
-  `SleepDisabled=1` has been owner-verified twice on the current Mac; networking, sustained agent
-  progress, thermal behavior, crash recovery, and cross-model support remain unverified.
-- Require a bounded lease/watchdog, AC/battery and thermal guardrails, narrow privilege boundary,
-  signing/notarization decision, ADR, and independent security review before implementation.
-- Publish a release centered on agent-aware sleep prevention, safe unattended runs, basic
-  notifications/attention, strict local-only privacy, and—only if the safety case passes—headless
-  operation.
-- Then listen. Issues, discussions, and stars are the feedback channel; there is no telemetry.
+- Agent tracking stays only the sensing layer for power, completion, and attention.
+- No conversation previews, in-app approvals, dozens of providers, remote agents, rich terminal
+  navigation, orchestration, or a notch interface.
+- **Headless closed-lid operation is not built and not on the current path.** v0.3 does not prevent
+  sleep when the lid is closed. Basic CPU continuity with `SleepDisabled=1` was owner-verified twice
+  on the current Mac — a historical data point only; networking, sustained agent progress, thermal
+  behavior, crash recovery, and cross-model support were never verified. Any such work would require a
+  bounded lease/watchdog, AC/battery and thermal guardrails, a narrow privilege boundary, a
+  signing/notarization decision, its own ADR, and an independent security review before any code lands.
+- The shipped v0.3 release centers on agent-aware sleep prevention, basic notifications/attention, and
+  strict local-only privacy. It does **not** include headless/closed-lid operation, and none is planned
+  for the current phase.
+- Now listening. Issues, discussions, and stars are the feedback channel; there is no telemetry.
 
-**Exit criteria:** a developer who has never seen the repo can understand what VibeMenu does,
-build or install it, and correctly predict what it will and won't read from their machine.
+**Exit criteria (met by v0.3):** a developer who has never seen the repo can understand what VibeMenu
+does, build or install it, and correctly predict what it will and won't read from their machine.
 
 ## Distribution
 
@@ -89,11 +91,12 @@ an ADR before any code lands.
   and a fabricated countdown is worse than none.
 - **Deny handling for Needs approval** — blocked upstream: Claude Desktop emits no hook event on
   deny (ADR 0018). Revisit only if a future build starts emitting one.
-- **Guarded lid-closed / headless mode** — active architecture/security investigation. The
-  underlying `SleepDisabled` mechanism passed two short owner-run CPU-continuity tests on the
-  current Mac, but production feasibility remains gated on networking and real-agent tests,
-  global-state ownership, a signed/admin-approved minimal helper, battery/thermal cutoffs,
-  auto-expiring leases, crash/reboot cleanup, its own ADR, and independent security review.
+- **Guarded lid-closed / headless mode** — not built and not currently being worked on; it would be
+  reconsidered only if real use pulls for it. The underlying `SleepDisabled` mechanism passed two
+  short owner-run CPU-continuity tests on the current Mac, but production feasibility remains gated on
+  networking and real-agent tests, global-state ownership, a signed/admin-approved minimal helper,
+  battery/thermal cutoffs, auto-expiring leases, crash/reboot cleanup, its own ADR, and independent
+  security review.
 - **Generalized "keep awake while X runs"** — same assertion engine, different trigger.
 - **Additional agents** — only where a privacy-safe local signal genuinely exists.
 
