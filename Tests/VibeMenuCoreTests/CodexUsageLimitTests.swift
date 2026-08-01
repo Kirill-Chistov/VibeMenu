@@ -703,12 +703,15 @@ private final class AtomicFlag: @unchecked Sendable {
 /// A fake provider that lets a test push snapshots synchronously (no timer, no files).
 private final class FakeCodexUsageProvider: CodexUsageLimitObserving, @unchecked Sendable {
     private(set) var snapshot: CodexUsageLimitSnapshot = .unavailable
+    private(set) var startCount = 0
+    private(set) var stopCount = 0
     private var callback: (@Sendable (CodexUsageLimitSnapshot) -> Void)?
     func start(onSnapshot: @escaping @Sendable (CodexUsageLimitSnapshot) -> Void) {
+        startCount += 1
         callback = onSnapshot
         callback?(snapshot)
     }
-    func stop() { callback = nil }
+    func stop() { stopCount += 1; callback = nil }
     func emit(_ newSnapshot: CodexUsageLimitSnapshot) {
         snapshot = newSnapshot
         callback?(newSnapshot)
@@ -740,9 +743,91 @@ struct CodexUsageLimitRefreshTests {
         return provider.snapshot
     }
 
+    private func waitForReads(
+        _ reader: CountingCodexUsageReader,
+        atLeast expected: Int,
+        timeout: TimeInterval = 2.0
+    ) async -> Int {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let count = reader.readCount
+            if count >= expected { return count }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return reader.readCount
+    }
+
+    @Test("Production limits cadence is 30 seconds; session discovery stays at 5 seconds")
+    func productionCadence() {
+        #expect(CodexUsageLimitProvider.refreshInterval == 30)
+        #expect(CodexSessionProvider.refreshInterval == 5)
+    }
+
+    @Test("The first enabled limits refresh is immediate")
+    func firstRefreshIsImmediate() async {
+        let reader = CountingCodexUsageReader(snapshot: snapshotWithData())
+        // A 10-second repeat makes a read within the short test deadline proof of deadline `.now()`.
+        let provider = CodexUsageLimitProvider(
+            reader: reader, isEnabled: { true }, interval: 10, leeway: 0
+        )
+        provider.start { _ in }
+        let reads = await waitForReads(reader, atLeast: 1, timeout: 1)
+        provider.stop()
+        #expect(reads == 1)
+    }
+
+    @Test("Enabling is picked up on the next existing provider cycle")
+    func enablingIsPickedUpOnCycle() async {
+        let flag = AtomicFlag(false)
+        let reader = CountingCodexUsageReader(snapshot: snapshotWithData())
+        let provider = CodexUsageLimitProvider(
+            reader: reader, isEnabled: { flag.value }, interval: 0.03, leeway: 0.005
+        )
+        provider.start { _ in }
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        #expect(reader.readCount == 0)
+
+        flag.value = true
+        let reads = await waitForReads(reader, atLeast: 1)
+        provider.stop()
+        #expect(reads >= 1)
+    }
+
+    @Test("Repeated model start is idempotent and stop fully unsubscribes")
+    @MainActor
+    func modelStartIsIdempotent() {
+        let provider = FakeCodexUsageProvider()
+        let model = CodexUsageLimitModel(provider: provider)
+        model.start()
+        model.start()
+        #expect(provider.startCount == 1)
+
+        model.stop()
+        #expect(provider.stopCount == 1)
+        provider.emit(snapshotWithData())
+        #expect(model.snapshot.source == .unavailable)
+    }
+
+    @Test("Provider stop cancels repeating limits reads")
+    func providerStopCancelsRepeatingWork() async {
+        let reader = CountingCodexUsageReader(snapshot: snapshotWithData())
+        let provider = CodexUsageLimitProvider(
+            reader: reader, isEnabled: { true }, interval: 0.02, leeway: 0
+        )
+        provider.start { _ in }
+        _ = await waitForReads(reader, atLeast: 2)
+        provider.stop()
+
+        // Allow any already-running handler to settle, then prove no repeating work remains.
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        let settledCount = reader.readCount
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        #expect(reader.readCount == settledCount)
+    }
+
     @Test("Enabled: the provider re-reads on each tick and republishes a CHANGED reading")
     func periodicRefreshRepublishesChanges() async {
-        // A fast interval so several ticks happen quickly (production cadence is 5 s; injectable only
+        // A fast interval so several ticks happen quickly (production cadence is 30 s; injectable only
         // for tests). The reader starts at 21%, then flips to 55% mid-run.
         let reader = CountingCodexUsageReader(snapshot: snapshotWithData(percent: 21))
         let provider = CodexUsageLimitProvider(reader: reader, isEnabled: { true }, interval: 0.03, leeway: 0.005)

@@ -32,8 +32,8 @@ public protocol CodexSessionReading: Sendable {
 
 /// The real reader over `~/.codex/sessions`.
 ///
-/// Concurrency: `@unchecked Sendable` — it holds only immutable configuration; each `readSessions`
-/// call is a self-contained read with no shared mutable state.
+/// Concurrency: `@unchecked Sendable` — immutable configuration plus the summary cache and its
+/// diagnostics are serialized by `cacheLock`, including concurrent `readSessions` calls.
 public final class CodexSessionReader: CodexSessionReading, @unchecked Sendable {
     /// `~/.codex/sessions` — shared by the Codex Desktop app and the CLI; the originator gate keeps
     /// only Desktop sessions.
@@ -69,6 +69,9 @@ public final class CodexSessionReader: CodexSessionReading, @unchecked Sendable 
     /// Resolves safe per-session titles from `~/.codex/session_index.jsonl` (see CodexSessionTitle.swift).
     /// Defaults to the index sibling of `directory`, so a test directory never reaches the real index.
     private let titleReader: CodexSessionTitleReading
+    private let cacheLock = NSLock()
+    private var summaryCache: [URL: CachedRollout] = [:]
+    private var _cacheDiagnostics = CodexSessionCacheDiagnostics()
 
     public init(
         directory: URL? = nil,
@@ -103,18 +106,48 @@ public final class CodexSessionReader: CodexSessionReading, @unchecked Sendable 
     }
 
     public func readSessions(now: Date) -> [CodexSession] {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+
         let cutoff = now.addingTimeInterval(-recencyHorizon)
         let files = Self.recentRolloutFiles(
             in: directory, modifiedAfter: cutoff, limit: Self.maxFilesScanned, fileManager: fileManager
         )
+        // The candidate list is the cache's complete authority: deleted files, files outside the
+        // recency horizon, and files displaced by the existing scan cap are evicted immediately.
+        let candidateURLs = Set(files.map(\.url))
+        summaryCache = summaryCache.filter { candidateURLs.contains($0.key) }
+
         // Read the safe title map once per tick; empty when the index is missing/unreadable.
         let titles = titleReader.titles()
 
         var byID: [String: CodexSession] = [:]
-        for (url, mtime) in files {
-            guard let data = readCapped(url) else { continue }
-            let text = String(decoding: data, as: UTF8.self)   // lenient: bad bytes → U+FFFD
-            guard let summary = CodexRolloutParser.parse(text: text, fallbackActivity: mtime),
+        var cacheHits = 0
+        var filesReparsed = 0
+        for file in files {
+            let summary: CodexRolloutSummary?
+            if let cached = summaryCache[file.url], cached.identity == file.cacheIdentity {
+                cacheHits += 1
+                summary = cached.summary
+            } else {
+                filesReparsed += 1
+                if let data = readCapped(file) {
+                    let text = String(decoding: data, as: UTF8.self)   // bad bytes → U+FFFD
+                    summary = CodexRolloutParser.parse(
+                        text: text, fallbackActivity: file.modificationDate
+                    )
+                } else {
+                    summary = nil
+                }
+                // Cache the changed file's current result even when reading/parsing failed. Replacing
+                // an obsolete summary with nil is what makes a changed file fail closed instead of
+                // retaining an earlier active session.
+                summaryCache[file.url] = CachedRollout(
+                    identity: file.cacheIdentity, summary: summary
+                )
+            }
+
+            guard let summary,
                   CodexRolloutParser.isDesktopOriginator(summary.originator),
                   // Drop internal subagent rollouts (Codex's own guardian/tool subagents): they are
                   // not user-facing Desktop sessions and would otherwise surface as phantom rows.
@@ -150,8 +183,23 @@ public final class CodexSessionReader: CodexSessionReading, @unchecked Sendable 
             byID[summary.sessionID] = session
         }
 
+        _cacheDiagnostics = CodexSessionCacheDiagnostics(
+            candidateFiles: files.count,
+            cacheHits: cacheHits,
+            filesReparsed: filesReparsed,
+            cachedFiles: summaryCache.count
+        )
+
         let sorted = byID.values.sorted(by: Self.mostActiveFirst)
         return Array(sorted.prefix(maxSessions))
+    }
+
+    /// Count-only cache evidence for sanitized tests. It never exposes file URLs, ids, titles, or
+    /// parsed metadata and is not logged by production code.
+    var cacheDiagnostics: CodexSessionCacheDiagnostics {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return _cacheDiagnostics
     }
 
     /// Sort most-active-first: by state priority, then newest activity, then id for determinism.
@@ -171,14 +219,17 @@ public final class CodexSessionReader: CodexSessionReading, @unchecked Sendable 
     /// `sessions/YYYY/MM/DD` tree with a stat-only enumerator; a missing tree yields `[]`.
     static func recentRolloutFiles(
         in directory: URL, modifiedAfter cutoff: Date, limit: Int, fileManager: FileManager
-    ) -> [(URL, Date)] {
-        let keys: [URLResourceKey] = [.contentModificationDateKey, .isRegularFileKey]
+    ) -> [CodexRolloutFileMetadata] {
+        let keys: [URLResourceKey] = [
+            .attributeModificationDateKey, .contentModificationDateKey, .fileSizeKey,
+            .fileResourceIdentifierKey, .isRegularFileKey,
+        ]
         guard let enumerator = fileManager.enumerator(
             at: directory, includingPropertiesForKeys: keys,
             options: [.skipsHiddenFiles], errorHandler: { _, _ in true }
         ) else { return [] }
 
-        var result: [(URL, Date)] = []
+        var result: [CodexRolloutFileMetadata] = []
         var examined = 0
         for case let url as URL in enumerator {
             examined += 1
@@ -187,32 +238,92 @@ public final class CodexSessionReader: CodexSessionReading, @unchecked Sendable 
                   url.lastPathComponent.hasPrefix("rollout-") else { continue }
             let values = try? url.resourceValues(forKeys: Set(keys))
             guard values?.isRegularFile == true,
-                  let mtime = values?.contentModificationDate, mtime >= cutoff else { continue }
-            result.append((url, mtime))
+                  let mtime = values?.contentModificationDate, mtime >= cutoff,
+                  let size = values?.fileSize, size >= 0 else { continue }
+            // The resource identifier distinguishes an atomically replaced file at the same URL even
+            // if its byte size and content mtime happen to match. Attribute mtime catches permission
+            // changes; when either value is unavailable, content mtime + size remain the fallback.
+            result.append(CodexRolloutFileMetadata(
+                url: url,
+                modificationDate: mtime,
+                attributeModificationDate: values?.attributeModificationDate,
+                size: size,
+                resourceIdentifier: values?.fileResourceIdentifier as? Data
+            ))
         }
         // Newest first, then keep only the freshest `limit` files so parse work is bounded.
-        result.sort { $0.1 > $1.1 }
+        result.sort { $0.modificationDate > $1.modificationDate }
         return Array(result.prefix(limit))
     }
 
     /// Read a rollout file under the byte cap. Small files are read whole; a file larger than
     /// `maxFileBytes` is read as head+tail (joined by a newline) so `session_meta` and the trailing
     /// completion/activity survive while the bulky middle is skipped.
-    func readCapped(_ url: URL) -> Data? {
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-        if size <= maxFileBytes {
-            return try? Data(contentsOf: url)
+    func readCapped(_ file: CodexRolloutFileMetadata) -> Data? {
+        if file.size <= maxFileBytes {
+            return try? Data(contentsOf: file.url)
         }
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        guard let handle = try? FileHandle(forReadingFrom: file.url) else { return nil }
         defer { try? handle.close() }
         let head = (try? handle.read(upToCount: headTailBytes)) ?? Data()
-        if size > headTailBytes {
-            try? handle.seek(toOffset: UInt64(size - headTailBytes))
+        if file.size > headTailBytes {
+            try? handle.seek(toOffset: UInt64(file.size - headTailBytes))
         }
         let tail = (try? handle.readToEnd()) ?? Data()
         var combined = head
         combined.append(0x0A)   // newline so a split line can't merge head's tail with tail's head
         combined.append(tail)
         return combined
+    }
+}
+
+/// Safe metadata collected during the existing stat-only candidate walk. Shared with the limits
+/// reader so both adapters retain one bounded discovery implementation.
+struct CodexRolloutFileMetadata: Sendable {
+    let url: URL
+    let modificationDate: Date
+    let attributeModificationDate: Date?
+    let size: Int
+    let resourceIdentifier: Data?
+
+    fileprivate var cacheIdentity: CodexRolloutCacheIdentity {
+        CodexRolloutCacheIdentity(
+            modificationDate: modificationDate,
+            attributeModificationDate: attributeModificationDate,
+            size: size,
+            resourceIdentifier: resourceIdentifier
+        )
+    }
+}
+
+private struct CodexRolloutCacheIdentity: Equatable, Sendable {
+    let modificationDate: Date
+    let attributeModificationDate: Date?
+    let size: Int
+    let resourceIdentifier: Data?
+}
+
+private struct CachedRollout: Sendable {
+    let identity: CodexRolloutCacheIdentity
+    /// The allowlisted parsed summary, or nil for the current unreadable/malformed identity.
+    let summary: CodexRolloutSummary?
+}
+
+struct CodexSessionCacheDiagnostics: Equatable, Sendable {
+    let candidateFiles: Int
+    let cacheHits: Int
+    let filesReparsed: Int
+    let cachedFiles: Int
+
+    init(
+        candidateFiles: Int = 0,
+        cacheHits: Int = 0,
+        filesReparsed: Int = 0,
+        cachedFiles: Int = 0
+    ) {
+        self.candidateFiles = candidateFiles
+        self.cacheHits = cacheHits
+        self.filesReparsed = filesReparsed
+        self.cachedFiles = cachedFiles
     }
 }

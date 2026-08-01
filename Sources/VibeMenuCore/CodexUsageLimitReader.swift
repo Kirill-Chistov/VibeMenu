@@ -274,16 +274,18 @@ public final class CodexUsageLimitReader: CodexUsageLimitReading, @unchecked Sen
             in: directory, modifiedAfter: cutoff, limit: Self.maxFilesScanned, fileManager: fileManager
         )
         var best: CodexRateLimitReading?
-        for (url, mtime) in files {
-            if let best, mtime <= best.capturedAt { break }   // no later file can have a newer capture
-            guard let data = readCapped(url) else { continue }
+        for file in files {
+            if let best, file.modificationDate <= best.capturedAt { break }
+            guard let data = readCapped(file.url) else { continue }
             let text = String(decoding: data, as: UTF8.self)
             // `parseLatest` returns nil for a rollout with no authoritative reading (no valid
             // `rate_limits` object), so such files are ignored. An authoritative reading is considered
             // even when it has zero windows: a newer authoritative-empty reading must win over an older
             // reading with limits and clear the rows — so we compare purely by capture time, not on
             // whether the reading has windows.
-            guard let reading = CodexRateLimitRollout.parseLatest(text: text, fallbackCaptured: mtime),
+            guard let reading = CodexRateLimitRollout.parseLatest(
+                text: text, fallbackCaptured: file.modificationDate
+            ),
                   CodexRolloutParser.isDesktopOriginator(reading.originator),
                   !reading.isSubagent else { continue }
             if best == nil || reading.capturedAt > best!.capturedAt {

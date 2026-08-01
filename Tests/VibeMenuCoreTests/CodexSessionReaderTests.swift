@@ -222,6 +222,288 @@ struct CodexSessionReaderTests {
     }
 }
 
+@Suite("CodexSessionReader — unchanged-rollout cache")
+struct CodexSessionReaderCacheTests {
+
+    private func reader(
+        _ dir: URL,
+        recencyHorizon: TimeInterval = 120,
+        maxSessions: Int = CodexSessionReader.defaultMaxSessions,
+        activeWindow: TimeInterval = CodexSessionState.defaultActiveWindow,
+        idleWindow: TimeInterval = CodexSessionState.defaultIdleWindow,
+        doneWindow: TimeInterval = CodexSessionState.defaultDoneWindow
+    ) -> CodexSessionReader {
+        CodexSessionReader(
+            directory: dir,
+            recencyHorizon: recencyHorizon,
+            maxSessions: maxSessions,
+            activeWindow: activeWindow,
+            idleWindow: idleWindow,
+            doneWindow: doneWindow
+        )
+    }
+
+    private func append(_ line: String, to url: URL) {
+        let handle = try! FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        _ = try! handle.seekToEnd()
+        try! handle.write(contentsOf: Data(line.utf8))
+    }
+
+    @Test("An unchanged rollout is parsed once across repeated reads")
+    func unchangedParsedOnce() {
+        let dir = CodexFixture.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let now = Date()
+        CodexFixture.write(
+            CodexFixture.rollout(
+                sessionID: "cached", start: now.addingTimeInterval(-10),
+                events: [(0, "task_started", [:])]
+            ),
+            named: "rollout-cached.jsonl", into: dir, mtime: now
+        )
+        let subject = reader(dir)
+
+        #expect(subject.readSessions(now: now).map(\.id) == ["cached"])
+        #expect(subject.cacheDiagnostics == CodexSessionCacheDiagnostics(
+            candidateFiles: 1, cacheHits: 0, filesReparsed: 1, cachedFiles: 1
+        ))
+
+        #expect(subject.readSessions(now: now).map(\.id) == ["cached"])
+        #expect(subject.cacheDiagnostics == CodexSessionCacheDiagnostics(
+            candidateFiles: 1, cacheHits: 1, filesReparsed: 0, cachedFiles: 1
+        ))
+    }
+
+    @Test("State ages from active to idle and stale without reparsing")
+    func stateAgesWithoutReparse() {
+        let dir = CodexFixture.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let now = Date()
+        CodexFixture.write(
+            CodexFixture.rollout(
+                sessionID: "aging", start: now,
+                events: [(0, "task_started", [:])]
+            ),
+            named: "rollout-aging.jsonl", into: dir, mtime: now
+        )
+        let subject = reader(
+            dir, recencyHorizon: 100, activeWindow: 10, idleWindow: 20, doneWindow: 20
+        )
+
+        #expect(subject.readSessions(now: now).first?.state == .active)
+        #expect(subject.readSessions(now: now.addingTimeInterval(11)).first?.state == .idle)
+        #expect(subject.cacheDiagnostics.filesReparsed == 0)
+        #expect(subject.cacheDiagnostics.cacheHits == 1)
+        #expect(subject.readSessions(now: now.addingTimeInterval(21)).first?.state == .stale)
+        #expect(subject.cacheDiagnostics.filesReparsed == 0)
+        #expect(subject.cacheDiagnostics.cacheHits == 1)
+    }
+
+    @Test("Appending activity invalidates the cache on the next read")
+    func appendedActivityInvalidates() {
+        let dir = CodexFixture.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let now = Date()
+        let start = now.addingTimeInterval(-120)
+        let url = CodexFixture.write(
+            CodexFixture.rollout(
+                sessionID: "append-activity", start: start,
+                events: [(0, "task_started", [:])]
+            ),
+            named: "rollout-append-activity.jsonl", into: dir, mtime: now
+        )
+        let subject = reader(dir, recencyHorizon: 300)
+        #expect(subject.readSessions(now: now).first?.state == .idle)
+
+        append(CodexFixture.line(
+            timestamp: now, type: "event_msg", payload: ["type": "task_started"]
+        ) + "\n", to: url)
+
+        let updated = try! #require(subject.readSessions(now: now).first)
+        #expect(updated.state == .active)
+        #expect(abs(updated.lastActivity.timeIntervalSince(now)) < 0.01)
+        #expect(subject.cacheDiagnostics.cacheHits == 0)
+        #expect(subject.cacheDiagnostics.filesReparsed == 1)
+    }
+
+    @Test("Appending task_complete invalidates and releases that mode")
+    func appendedCompletionInvalidatesAndReleases() {
+        let dir = CodexFixture.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let now = Date()
+        let start = now.addingTimeInterval(-10)
+        let url = CodexFixture.write(
+            CodexFixture.rollout(
+                sessionID: "append-complete", originator: "codex_work_desktop", start: start,
+                events: [(0, "task_started", [:])]
+            ),
+            named: "rollout-append-complete.jsonl", into: dir, mtime: now
+        )
+        let subject = reader(dir)
+        let active = subject.readSessions(now: now)
+        #expect(active.first?.state == .active)
+        #expect(CodexSessionActivity.automationIntent(active, mode: .work) == .hold)
+
+        append(CodexFixture.line(
+            timestamp: now, type: "event_msg", payload: ["type": "task_complete"]
+        ) + "\n", to: url)
+
+        let completed = subject.readSessions(now: now)
+        #expect(completed.first?.state == .done)
+        #expect(completed.first?.endedWithCompletion == true)
+        #expect(CodexSessionActivity.automationIntent(completed, mode: .work) == .release)
+        #expect(subject.cacheDiagnostics.filesReparsed == 1)
+    }
+
+    @Test("Same-path replacement and truncation both invalidate")
+    func replacementAndTruncationInvalidate() {
+        let dir = CodexFixture.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let now = Date()
+        let oldText = CodexFixture.rollout(
+            sessionID: "old-1", start: now, events: [(0, "task_started", [:])]
+        )
+        let newText = CodexFixture.rollout(
+            sessionID: "new-2", start: now, events: [(0, "task_started", [:])]
+        )
+        #expect(oldText.utf8.count == newText.utf8.count)
+        let url = CodexFixture.write(
+            oldText, named: "rollout-replaced.jsonl", into: dir, mtime: now
+        )
+        let subject = reader(dir)
+        #expect(subject.readSessions(now: now).map(\.id) == ["old-1"])
+
+        // Atomic write replaces the file identity. Preserve the same mtime and size so this phase
+        // specifically exercises the stable resource-identifier part of the cache identity.
+        try! Data(newText.utf8).write(to: url, options: .atomic)
+        try! FileManager.default.setAttributes(
+            [.modificationDate: now], ofItemAtPath: url.path
+        )
+        #expect(subject.readSessions(now: now).map(\.id) == ["new-2"])
+        #expect(subject.cacheDiagnostics.filesReparsed == 1)
+
+        let handle = try! FileHandle(forWritingTo: url)
+        try! handle.truncate(atOffset: 0)
+        try! handle.close()
+        #expect(subject.readSessions(now: now).isEmpty)
+        #expect(subject.cacheDiagnostics.filesReparsed == 1)
+        #expect(subject.cacheDiagnostics.cachedFiles == 1)   // negative result replaced stale active
+    }
+
+    @Test("A malformed changed file cannot preserve an old active result")
+    func changedMalformedFailsClosed() {
+        let dir = CodexFixture.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let now = Date()
+        let url = CodexFixture.write(
+            CodexFixture.rollout(
+                sessionID: "fail-closed", start: now,
+                events: [(0, "task_started", [:])]
+            ),
+            named: "rollout-fail-closed.jsonl", into: dir, mtime: now
+        )
+        let subject = reader(dir)
+        #expect(subject.readSessions(now: now).first?.state == .active)
+
+        try! Data("{malformed changed rollout\n".utf8).write(to: url)
+        #expect(subject.readSessions(now: now).isEmpty)
+        #expect(subject.cacheDiagnostics.filesReparsed == 1)
+        #expect(subject.cacheDiagnostics.cachedFiles == 1)
+
+        // The nil summary is reusable only while that malformed file is unchanged.
+        #expect(subject.readSessions(now: now).isEmpty)
+        #expect(subject.cacheDiagnostics.cacheHits == 1)
+        #expect(subject.cacheDiagnostics.filesReparsed == 0)
+    }
+
+    @Test("Deleted and horizon-expired files are evicted")
+    func deletionAndHorizonExpiryEvict() {
+        let dir = CodexFixture.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let now = Date()
+        let deletedURL = CodexFixture.write(
+            CodexFixture.rollout(
+                sessionID: "deleted", start: now,
+                events: [(0, "task_started", [:])]
+            ),
+            named: "rollout-deleted.jsonl", into: dir, mtime: now
+        )
+        CodexFixture.write(
+            CodexFixture.rollout(
+                sessionID: "expires", start: now,
+                events: [(0, "task_started", [:])]
+            ),
+            named: "rollout-expires.jsonl", into: dir, mtime: now
+        )
+        let subject = reader(dir, recencyHorizon: 30)
+        #expect(subject.readSessions(now: now).count == 2)
+        #expect(subject.cacheDiagnostics.cachedFiles == 2)
+
+        try! FileManager.default.removeItem(at: deletedURL)
+        #expect(subject.readSessions(now: now).map(\.id) == ["expires"])
+        #expect(subject.cacheDiagnostics.cachedFiles == 1)
+
+        #expect(subject.readSessions(now: now.addingTimeInterval(31)).isEmpty)
+        #expect(subject.cacheDiagnostics.candidateFiles == 0)
+        #expect(subject.cacheDiagnostics.cachedFiles == 0)
+    }
+
+    @Test("Work and Codex modes survive cache reuse as independent sessions")
+    func modesSurviveCacheReuse() {
+        let dir = CodexFixture.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let now = Date()
+        CodexFixture.write(
+            CodexFixture.rollout(
+                sessionID: "work-cache", originator: "codex_work_desktop", start: now,
+                events: [(0, "task_started", [:])]
+            ),
+            named: "rollout-work-cache.jsonl", into: dir, mtime: now
+        )
+        CodexFixture.write(
+            CodexFixture.rollout(
+                sessionID: "codex-cache", start: now,
+                events: [(0, "task_started", [:])]
+            ),
+            named: "rollout-codex-cache.jsonl", into: dir, mtime: now
+        )
+        let subject = reader(dir)
+        _ = subject.readSessions(now: now)
+        let cached = subject.readSessions(now: now)
+
+        #expect(cached.first { $0.id == "work-cache" }?.mode == .work)
+        #expect(cached.first { $0.id == "codex-cache" }?.mode == .codex)
+        #expect(CodexSessionActivity.automationIntent(cached, mode: .work) == .hold)
+        #expect(CodexSessionActivity.automationIntent(cached, mode: .codex) == .hold)
+        #expect(subject.cacheDiagnostics.cacheHits == 2)
+        #expect(subject.cacheDiagnostics.filesReparsed == 0)
+    }
+
+    @Test("The cache is bounded by the existing candidate-file cap")
+    func cacheIsBounded() {
+        let dir = CodexFixture.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let now = Date()
+        for index in 0..<(CodexSessionReader.maxFilesScanned + 1) {
+            let fileTime = now.addingTimeInterval(-Double(index) / 1000)
+            CodexFixture.write(
+                CodexFixture.rollout(
+                    sessionID: "bounded-\(index)", start: fileTime,
+                    events: [(0, "task_started", [:])]
+                ),
+                named: "rollout-bounded-\(index).jsonl", into: dir, mtime: fileTime
+            )
+        }
+        let subject = reader(dir, recencyHorizon: 300, maxSessions: 1)
+        _ = subject.readSessions(now: now)
+
+        #expect(subject.cacheDiagnostics.candidateFiles == CodexSessionReader.maxFilesScanned)
+        #expect(subject.cacheDiagnostics.filesReparsed == CodexSessionReader.maxFilesScanned)
+        #expect(subject.cacheDiagnostics.cachedFiles == CodexSessionReader.maxFilesScanned)
+    }
+}
+
 // Title resolution from `session_index.jsonl` (docs/decisions/0017). Synthetic index + rollouts in a
 // throwaway dir; the reader is given an explicit index URL inside that same dir so it never touches the
 // real ~/.codex. Covers the id-join, the folder/generic fallbacks, unsafe-title rejection + no leakage,

@@ -4572,3 +4572,68 @@ menu-bar popover/Settings rendering or live Work/Codex attribution in a running 
 
 **Next step.** Investigate the reported VibeMenu energy usage separately; no energy optimization was
 started in this checkpoint.
+
+## 2026-08-01 — Cache unchanged ChatGPT rollouts; poll display-only limits every 30 seconds
+
+Reduced measured ChatGPT monitoring work without changing the five-second session discovery/state
+cadence or any sleep-prevention rule. `CodexSessionReader` now keeps a lock-serialized, in-memory
+cache keyed by rollout URL plus content mtime, attribute mtime, byte size, and Foundation's stable
+file resource identifier. Each entry is only the existing allowlisted `CodexRolloutSummary` (or a
+negative nil result for the current unreadable/malformed identity); final session state is re-derived
+on every read from that summary, the current clock, and the configured active/idle/done/recency
+windows. The current candidate set prunes deletion, horizon expiry, and entries beyond the existing
+400-file scan cap. `CodexUsageLimitProvider.refreshInterval` changed from 5 to 30 seconds; its first
+fire remains immediate, its test interval remains injectable, and the limits model remains
+display-only.
+
+Added sanitized coverage for warm-cache reuse, clock-only state aging, appended activity and
+`task_complete`, same-path atomic replacement, truncation, malformed changed files failing closed,
+deletion/horizon eviction, Work/Codex identity and per-mode intent, and the 400-entry bound. Limits
+tests now pin the 30-second production cadence alongside the unchanged five-second session cadence,
+immediate first read, enablement on the next provider cycle, idempotent model start, and complete
+timer cancellation. Existing ownership tests continue to prove one shared assertion, independent
+Work/Codex/manual ownership, and no usage-limit path into sleep prevention.
+
+**Release measurement (active Codex implementation turn, not a fully idle-agent run).** One Release
+VibeMenu process was sampled 61 times at one-second intervals per scenario using `top`; “near zero”
+means `%CPU <= 0.1`. The current metadata-only candidate count was 2 rollout files / 2,159,834 bytes
+inside the one-hour session horizon and 15 files / 48,873,962 bytes inside the 24-hour limits horizon.
+
+- all optional monitoring off: CPU avg 1.007%, peak 2.5%; POWER avg 1.020, peak 2.5; 26/61 near-zero;
+- ChatGPT limits only: CPU avg 1.367%, peak 11.7%; POWER avg 1.380, peak 11.7; 26/61 near-zero;
+- ChatGPT sessions only, active turn: CPU avg 2.036%, peak 9.5%; POWER avg 2.056, peak 9.6;
+  22/61 near-zero;
+- sessions + limits, active turn: CPU avg 2.305%, peak 13.0%; POWER avg 2.326, peak 13.0;
+  24/61 near-zero.
+
+Against the supplied earlier Release averages (1.02% / 2.70% / 4.38% / 5.75%), limits-only fell
+49.4%, active-turn sessions-only fell 53.5%, and active-turn sessions + limits fell 59.9%; all-off was
+effectively unchanged. Earlier peak CPU, POWER, and near-zero counts were not supplied, so those
+before/after dimensions cannot be compared honestly. Sanitized cache diagnostics recorded a cold
+tick as 1 candidate / 0 hits / 1 reparse, an unchanged warm tick as 1 / 1 / 0, a changed append tick
+as 1 / 0 / 1, and the bound as 400 candidates / 400 cached summaries. A 20-second stack sample with
+both features enabled showed the remaining hottest ChatGPT work was the required parse of the rollout
+that this active turn had just changed (201 samples under `readSessions`, including 93 + 74 in parser
+timestamp/JSON work); the unchanged candidate walk was 27 samples and the still-uncached safe title
+index read was 20. Claude heartbeat decoding also appeared (14 samples) but was not modified.
+
+**Validation.** `swift build` completed; `scripts/test.sh` passed **682 tests in 98 suites**;
+`xcodebuild -project App/VibeMenu.xcodeproj -scheme VibeMenu -configuration Release
+-derivedDataPath ./.derivedData build` reported **BUILD SUCCEEDED**; `git diff --check` was clean.
+The modified Release app launched and stayed running. One focused test initially compared ISO-rounded
+timestamps for exact equality; it was corrected to a 10 ms tolerance. The first Release launch was
+attempted before a complete executable was present; rerunning the requested Release build produced
+the app and the launch succeeded. A stack-driven cleanup then removed a redundant per-candidate
+`attributesOfItem` call in favor of the resource identifier returned by the discovery stat; the
+focused cache suite and Release build passed again afterward.
+
+**Verified vs. not verified.** Verified: cache reuse/invalidation/fail-closed behavior, fresh state
+aging, unchanged session cadence, 30-second limits cadence, immediate/provider lifecycle behavior,
+mode and ownership invariants, privacy-safe summary-only storage, builds/tests, Release launch, and
+the active-turn measurements above. No network, telemetry, new data source, dependency, private API,
+preference key, Claude-monitoring logic, or power assertion code changed. The measurement preferences
+were restored and the final Release process was relaunched. Not verified: a truly idle-agent session
+measurement, on-screen menu/Settings rendering, and a live observed completion-to-assertion release
+after this implementation turn ends. Recommended next step: after the owner repeats an idle-agent
+baseline, profile Claude monitoring separately; the sample shows it contributes to remaining work,
+but this patch deliberately leaves it untouched.

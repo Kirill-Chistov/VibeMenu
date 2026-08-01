@@ -34,9 +34,9 @@ public protocol CodexUsageLimitObserving: AnyObject {
 /// Concurrency: `@unchecked Sendable` — mutable state is guarded by `lock`; the timer fires on a
 /// private utility queue and delivers `onSnapshot` on the main queue.
 public final class CodexUsageLimitProvider: CodexUsageLimitObserving, @unchecked Sendable {
-    /// Display-only refresh cadence. The reading changes at most once per Codex turn; ~5 s keeps the
-    /// section current shortly after opening the menu while staying a coarse, coalesced wakeup.
-    public static let refreshInterval: TimeInterval = 5
+    /// Display-only refresh cadence. The reading changes at most once per ChatGPT turn; 30 s avoids
+    /// repeatedly scanning rollouts while keeping this planning-only surface reasonably current.
+    public static let refreshInterval: TimeInterval = 30
     public static let refreshLeeway: TimeInterval = 1
 
     private let reader: CodexUsageLimitReading

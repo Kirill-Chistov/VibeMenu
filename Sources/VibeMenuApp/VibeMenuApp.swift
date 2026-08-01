@@ -452,7 +452,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // (docs/decisions/0017-codex-session-support.md). Display-only — like the Claude usage section it
     // never touches the keep-awake loop. The provider self-gates on `showCodexLimits` (read live from
     // `UserDefaults`): off (the default) ⇒ no file I/O; flipping the toggle takes effect on the next
-    // ~5 s tick with no restart. Reads ONLY the numeric rate-limit fields — never prompts, responses,
+    // ~30 s provider tick with no restart. Reads ONLY the numeric rate-limit fields — never prompts, responses,
     // tool output, token counts, plan/account, or auth.
     let codexUsage = CodexUsageLimitModel(provider: CodexUsageLimitProvider(
         isEnabled: { UserDefaults.standard.bool(forKey: PreferenceKey.showCodexLimits) }
