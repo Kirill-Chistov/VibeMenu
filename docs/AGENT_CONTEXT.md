@@ -15,7 +15,7 @@ Mac awake while Claude Code or an active Codex Desktop session is working, relea
 power assertion when work finishes, and — **for Claude only** — uses a bounded quiet-work hold
 (15 minutes by default) to cover silent builds, tools, or subagents. Codex has no heartbeat, so
 it holds only while it looks active (~60s window) and gets no quiet-hold. It also provides a compact Session
-Radar, coarse thermal status, optional Launch at Login, and opt-in experimental usage-limit
+Radar, coarse thermal status, optional Launch at Login, and opt-in, default-off usage-limit
 previews. It is Apache-2.0 licensed; the name, logo, and brand assets are separate.
 
 ## Repository boundaries and rules
@@ -40,14 +40,20 @@ previews. It is Apache-2.0 licensed; the name, logo, and brand assets are separa
 
 - Menu-bar-only SwiftUI app (`MenuBarExtra`, `LSUIElement`); no Dock icon and no main window,
   but there is a Settings scene/window (`VibeMenuApp.swift`).
-- Manual keep-awake override and automatic public power assertions driven by Claude activity
-  and active Codex Desktop sessions; manual mode wins. The menu now shows the actual assertion
-  state and its current Manual/Claude/Codex owners, including acquisition failure. The manual
-  switch always remains interactive and changes only manual ownership. Codex usage-limit refreshes
-  never affect sleep prevention.
+- Manual keep-awake override and one automatic public power assertion driven by Claude activity and
+  active ChatGPT desktop sessions; manual mode wins. The menu shows the actual assertion state and its
+  current owners in the order Manual → Claude → Codex → ChatGPT Work, including acquisition failure.
+  The app's two modes are **independent** owners, so one finishing never releases a hold the other
+  still needs. The manual switch always remains interactive and changes only manual ownership.
+  Usage-limit refreshes never affect sleep prevention.
 - Claude detection from process/file metadata, with an optional user-installed Claude
   heartbeat hook for reliable working/waiting states. The hook is never installed
-  automatically.
+  automatically. When no session's newest heartbeat record is still inside the 600s stale window
+  (never installed, or the hook stopped writing — stale leftover files do **not** count), automatic
+  Claude keep-awake degrades to a bounded L1 fallback (visible process + `~/.claude` metadata inside
+  the 10s recency window ⇒ hold; no quiet-work extension). A *recent* record — including a finish —
+  keeps heartbeat state authoritative. The Session Radar stays heartbeat-only and fabricates no row
+  ([ADR 0010 amendment](decisions/0010-quiet-work-hold.md)).
 - Shared Session Radar for Claude and Codex Desktop: a four-row interleaved primary list plus one
   centralized bounded Recent sessions expansion (up to ten extra rows), working/quiet/waiting/
   done/stale states, elapsed time, safe titles/folder names, and per-row hide.
@@ -62,10 +68,26 @@ previews. It is Apache-2.0 licensed; the name, logo, and brand assets are separa
   disclosures.
 - Opt-in Claude limits: real 5-hour/weekly data from the Claude Desktop cache or a
   Claude Code `statusLine` capture; Desktop may also provide per-model weekly rows.
-- Opt-in Codex limits: real `rate_limits` data from Codex Desktop rollouts, schema-driven rather than
-  a fixed 5-hour/weekly pair — each row derives its label from the window's own reported duration and
-  disappears when Codex no longer exposes that window. Both usage features are display-only, fail
-  closed, and off by default.
+- Opt-in ChatGPT limits: real `rate_limits` data from the ChatGPT desktop app's rollouts, schema-driven
+  rather than a fixed 5-hour/weekly pair — each row derives its label from the window's own reported
+  duration and disappears when the app no longer exposes that window. Both usage features are
+  display-only, fail closed, and off by default.
+- **Unified ChatGPT app (verified 2026-07-28, ADR 0017 Amendment 6).** The one app's **Work** and
+  **Codex** modes both write to the already-approved rollout tree and session index, and both pass the
+  existing Desktop-originator gate (`codex_work_desktop` / `Codex Desktop`). Sessions surface as
+  independent rows with a derived **ChatGPT Work**/**Codex** pill — the raw originator never reaches
+  the UI — and the two modes share **one** `ChatGPT limits` section, since they report the same
+  server-side allowance. A new limits reading is written only by a real Work or Codex turn; opening the
+  app or its usage screen writes none. The user-visible provider is named **ChatGPT** (Settings group,
+  `Track ChatGPT sessions`, `ChatGPT limits`), while every storage key, internal type name, and data
+  source is unchanged; notification titles still use `AttentionProvider.displayName` (`OpenAI`).
+  For sleep prevention the two modes are **separate owners** (`AgentKeepAwakeSource.codex` /
+  `.chatGPTWork`), derived per mode from the same raw list, so one mode finishing cannot release the
+  shared assertion while the other is still working.
+- **No `Experimental` badge on either limits section.** Claude limits and ChatGPT limits stay opt-in
+  and default-off, and keep every honest explanation (local-only source, best-effort/version-fragile
+  framing, "as of" staleness, no-network limitation, shared allowance, honest unavailable state) —
+  only the visible classification chip was removed.
 
 ## Privacy boundaries
 
@@ -171,7 +193,7 @@ when the agent can determine routine steps safely from the repo.
 - Claude usage previews, the `v0.2` tag, Codex Desktop session/usage support, and conservative
   Codex keep-awake integration landed July 9–10.
 - The reviewed Trust the Run work, committed in `5feb643`, adds truthful assertion status and
-  Manual/Claude/Codex ownership below the Sleep prevention switch. The switch remains usable during
+  Manual/Claude/Codex/ChatGPT Work ownership below the Sleep prevention switch. The switch remains usable during
   automation and changes only manual ownership; builds/tests passed and the owner verified the UI.
 - **Public-source state:** the repository is public, and the latest published binary release is
   **v0.3**, cut directly from this repo via `scripts/package-github-release.sh`. Each tag corresponds
@@ -251,7 +273,7 @@ records the bounded attention behavior; ADR 0021 records the product direction.
 Sequence to date:
 
 1. **Trust the Run — implemented and verified:** the menu now shows whether VibeMenu actually
-   holds the assertion, its Manual/Claude/Codex owners, and acquisition failure. The manual switch
+   holds the assertion, its Manual/Claude/Codex/ChatGPT Work owners, and acquisition failure. The manual switch
    always remains available and changes only manual ownership. Reliable quiet-hold remaining time
    is still deferred because the current model does not expose it. Signing/notarization is now a
    declined cost for this phase, not a prerequisite — build-from-source is the documented

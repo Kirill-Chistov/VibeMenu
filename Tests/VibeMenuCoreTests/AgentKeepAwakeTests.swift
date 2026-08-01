@@ -21,32 +21,32 @@ struct CodexSessionActivityTests {
 
     @Test("An active Codex session holds")
     func activeHolds() {
-        #expect(CodexSessionActivity.automationIntent([session("x", .active)]) == .hold)
+        #expect(CodexSessionActivity.automationIntent([session("x", .active)], mode: .codex) == .hold)
     }
 
     @Test("Done / idle / stale / unknown never hold (conservative)")
     func nonActiveReleases() {
-        #expect(CodexSessionActivity.automationIntent([session("x", .idle)]) == .release)
-        #expect(CodexSessionActivity.automationIntent([session("x", .done)]) == .release)
-        #expect(CodexSessionActivity.automationIntent([session("x", .stale)]) == .release)
-        #expect(CodexSessionActivity.automationIntent([session("x", .unknown)]) == .release)
+        #expect(CodexSessionActivity.automationIntent([session("x", .idle)], mode: .codex) == .release)
+        #expect(CodexSessionActivity.automationIntent([session("x", .done)], mode: .codex) == .release)
+        #expect(CodexSessionActivity.automationIntent([session("x", .stale)], mode: .codex) == .release)
+        #expect(CodexSessionActivity.automationIntent([session("x", .unknown)], mode: .codex) == .release)
     }
 
     @Test("Empty list (disabled / missing / stale data) releases")
     func emptyReleases() {
-        #expect(CodexSessionActivity.automationIntent([]) == .release)
+        #expect(CodexSessionActivity.automationIntent([], mode: .codex) == .release)
     }
 
     @Test("Any one active session among finished ones holds")
     func mixHolds() {
         let sessions = [session("a", .done), session("b", .active), session("c", .stale)]
-        #expect(CodexSessionActivity.automationIntent(sessions) == .hold)
+        #expect(CodexSessionActivity.automationIntent(sessions, mode: .codex) == .hold)
     }
 
     @Test("Only done/stale sessions do not hold")
     func onlyFinishedReleases() {
         let sessions = [session("a", .done), session("b", .stale)]
-        #expect(CodexSessionActivity.automationIntent(sessions) == .release)
+        #expect(CodexSessionActivity.automationIntent(sessions, mode: .codex) == .release)
     }
 }
 

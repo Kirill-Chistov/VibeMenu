@@ -20,7 +20,7 @@ they ship if real use pulls for them, and not otherwise.
 - Shared **Session Radar** for both agents — four interleaved priority rows plus one centralized,
   provider-neutral **Recent sessions** expansion for up to ten more, with elapsed time, safe titles,
   provider pills, and per-row hide.
-- **Trust the Run** — the menu shows the real assertion state, its Manual/Claude/Codex owners,
+- **Trust the Run** — the menu shows the real assertion state, its Manual/Claude/Codex/ChatGPT Work owners,
   and acquisition failure. The manual switch stays interactive and owns only manual state.
 - **Attention v1** — Claude **Needs approval** and **Done** notifications with the system default
   sound, best-effort provider activation, and an orange menu-bar glyph while any raw Claude session

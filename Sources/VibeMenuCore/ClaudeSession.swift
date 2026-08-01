@@ -482,6 +482,14 @@ extension ClaudeSessionState {
 /// signal + `now` — a unit test pins that equivalence across the automation timelines. The
 /// app continues to feed IOKit from `automationIntent` (the proven path); this function exists
 /// so the aggregate is testable and so a future unification has a validated target.
+///
+/// **One deliberate exception (0010 amendment, 2026-07-26):** when no session's newest heartbeat
+/// record is still inside the stale window — no records at all, or only stale leftovers —
+/// `automationIntent` falls back to L1 and may `.hold` for a live process with fresh `~/.claude`
+/// metadata, while this aggregate stays `.release` — coarse L1 state carries no session id, title,
+/// or project, and the radar never fabricates a row from it. The equivalence therefore holds for
+/// every input with a recent heartbeat signal, which is the drift that matters, and the radar
+/// remains heartbeat-only by design.
 public func sessionsKeepAwakeIntent(_ sessions: [ClaudeSession]) -> ClaudeAutomationIntent {
     sessions.contains(where: { $0.holdsSleepPrevention }) ? .hold : .release
 }

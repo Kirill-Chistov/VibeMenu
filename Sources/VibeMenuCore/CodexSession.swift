@@ -125,6 +125,51 @@ public enum CodexSessionDisplayStyle: String, Equatable, Sendable, CaseIterable 
     case inactive   // stale / unknown
 }
 
+// MARK: - Session mode (which OpenAI surface wrote the rollout)
+
+/// Which mode of the unified OpenAI desktop app a session came from — **Work** or **Codex**.
+///
+/// The unified ChatGPT app exposes both modes and writes each one's session to the same approved
+/// rollout tree, distinguished only by the rollout's `originator`. This enum is the *derived, safe*
+/// form of that distinction: the row pill shows `mode.label`, so the **raw originator string never
+/// reaches the UI** — only this two-case enum does. It carries no account, plan, path, or content
+/// information, and it changes no data source: both modes are the same already-approved rollout
+/// metadata (docs/decisions/0017-codex-session-support.md, Amendment 6).
+public enum CodexSessionMode: String, Equatable, Sendable, CaseIterable, Codable {
+    /// A ChatGPT **Work** session (rollout `originator` `codex_work_desktop`).
+    case work
+    /// A **Codex** session (the canonical `Codex Desktop` originator, and any other accepted
+    /// desktop-family originator — the conservative default).
+    case codex
+
+    /// The exact user-visible pill text for a session row. `.work` spells out **ChatGPT Work** so a
+    /// bare "Work" pill can never read as a generic state word next to `Working`.
+    public var label: String {
+        switch self {
+        case .work: "ChatGPT Work"
+        case .codex: "Codex"
+        }
+    }
+
+    /// The one `codex_<segment>_desktop` middle segment that means Work. Kept an exact match (not a
+    /// `contains`) so an unknown future family member falls back to `.codex` rather than being
+    /// guessed into Work.
+    static let workOriginatorSegment = "work"
+
+    /// Derive the mode from a rollout `originator`, structurally and totally.
+    ///
+    /// `codex_work_desktop` ⇒ `.work`; the canonical `"Codex Desktop"` and every other accepted
+    /// desktop-family originator ⇒ `.codex`. This deliberately does **not** re-check the Desktop gate
+    /// — `CodexRolloutParser.isDesktopOriginator` already did that before a session is built — and it
+    /// never stores or forwards the string it inspected.
+    public static func derive(originator: String) -> CodexSessionMode {
+        let trimmed = originator.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard trimmed.hasPrefix("codex_"), trimmed.hasSuffix("_desktop") else { return .codex }
+        let middle = trimmed.dropFirst("codex_".count).dropLast("_desktop".count)
+        return middle == workOriginatorSegment ? .work : .codex
+    }
+}
+
 // MARK: - Session value
 
 /// One Codex Desktop session in the shared session list.
@@ -169,9 +214,14 @@ public struct CodexSession: Equatable, Sendable, Identifiable {
     /// it from the first observed activity and resets it after Done when a newer turn begins.
     public let timerStartedAt: Date?
 
-    /// The agent name — always `"Codex"`. Drives the row's agent pill so Claude and Codex rows are
-    /// clearly labelled in the shared list.
-    public let agent: String
+    /// Which mode of the unified OpenAI desktop app wrote this session — derived from the rollout
+    /// originator by `CodexSessionMode.derive`, never the raw originator string.
+    public let mode: CodexSessionMode
+
+    /// The agent name shown in the row's pill — `"ChatGPT Work"` or `"Codex"`, derived from `mode`.
+    /// Claude and ChatGPT rows stay clearly labelled in the shared list, and the two ChatGPT modes are
+    /// told apart without exposing any originator text.
+    public var agent: String { mode.label }
 
     public init(
         id: String,
@@ -182,7 +232,7 @@ public struct CodexSession: Equatable, Sendable, Identifiable {
         title: String? = nil,
         endedWithCompletion: Bool = false,
         timerStartedAt: Date? = nil,
-        agent: String = "Codex"
+        mode: CodexSessionMode = .codex
     ) {
         self.id = id
         self.state = state
@@ -192,7 +242,7 @@ public struct CodexSession: Equatable, Sendable, Identifiable {
         self.title = title
         self.endedWithCompletion = endedWithCompletion
         self.timerStartedAt = timerStartedAt
-        self.agent = agent
+        self.mode = mode
     }
 }
 
@@ -232,7 +282,7 @@ extension CodexSession {
         CodexSession(
             id: id, state: state, folderName: folderName, startedAt: startedAt,
             lastActivity: lastActivity, title: title, endedWithCompletion: endedWithCompletion,
-            timerStartedAt: timerStartedAt, agent: agent
+            timerStartedAt: timerStartedAt, mode: mode
         )
     }
 }

@@ -62,7 +62,7 @@ turning one completed turn into a new Quiet/Working timer while preserving reuse
 
 VibeMenu reads these files — **its own** files, not your transcripts — to derive each Session
 Radar row's state (**Working** / **Quiet** / **Needs approval** / **Done** / **Stale**) and to
-drive the automatic keep-awake decision, falling back to L1 when no heartbeat files are present.
+drive the automatic keep-awake decision; when no heartbeat is recent, keep-awake falls back to L1.
 See [`../../docs/PRIVACY.md`](../../docs/PRIVACY.md).
 
 ---
@@ -78,7 +78,17 @@ cp Support/ClaudeHeartbeat/vibemenu-claude-hook.sh \
 chmod +x ~/Library/Application\ Support/VibeMenu/ClaudeHeartbeat/vibemenu-claude-hook.sh
 ```
 
-Note the **absolute path** you chose — you'll paste it into the settings below.
+Note the **absolute path** you chose — you'll paste it into the settings below. Use the fully
+expanded path (`/Users/you/Library/...`), not `~/Library/...`: the snippet keeps the path inside
+single quotes, and a shell never expands `~` inside quotes.
+
+> **Keep the script where you point Claude at it.** The hook entries below name that exact file. If
+> you later move, rename, or delete it *without* removing the entries, every hook invocation fails
+> silently — Claude Code doesn't surface a failing hook, so the only symptom is VibeMenu quietly
+> losing all Claude Session Radar rows and dropping back to coarse keep-awake (no quiet-work hold,
+> no **Needs approval**), exactly as if the hook had never been installed. See
+> [step 4](#4-verify-events-are-being-written) for the one-line check and
+> [step 5](#5-remove-it) for removing the two halves together.
 
 ## 2. Back up your Claude settings first
 
@@ -168,6 +178,58 @@ the switch. It reads `Off` when nothing is held.
 > `com.kirillchistov.VibeMenu`, category `claude-detect`) — metadata only. There is no
 > diagnostics row in the menu, in any build.
 
+### Nothing appears? Check the script is still there
+
+The commonest failure is a **registered hook pointing at a script that is no longer there** (it was
+moved, renamed, or deleted while the `hooks` entries stayed behind). Claude Code reports nothing, and
+VibeMenu simply shows no Claude rows and — once the last heartbeat it *did* write ages out (within
+ten minutes for most events, or at the 15-minute quiet-work cap for a leftover work event) — falls
+back to coarse baseline keep-awake, which holds only while Claude is visibly writing, with no
+quiet-work hold. So the menu looks half-working rather than broken.
+
+Check the exact file your settings name (adjust the path if you chose a different location):
+
+```sh
+ls -l ~/Library/Application\ Support/VibeMenu/ClaudeHeartbeat/vibemenu-claude-hook.sh
+```
+
+No such file, or no `x` permission, means the hook can never run: re-copy it as in
+[step 1](#1-pick-a-stable-location-for-the-script) (`chmod +x` included) — no settings change is
+needed as long as the path still matches. Then send one prompt and re-run the `ls` on
+`.../ClaudeHeartbeat/sessions/` above; a file should appear within a couple of seconds, and the
+Session Radar row within about two more (the detection tick).
+
+Old heartbeat files left behind by a hook that stopped firing do **not** keep the baseline
+fallback switched off: VibeMenu ignores a session's heartbeat once it is more than ten minutes old
+(fifteen if its last write was a work event, which holds until the quiet-work cap), and from then
+on treats the situation as "no recent heartbeat signal". You do not have to delete
+`.../ClaudeHeartbeat/sessions/` to get coarse keep-awake back — it returns on its own — though
+deleting it is still the tidy way to finish an uninstall.
+
+### Checking the baseline fallback (no working hook)
+
+This is the *coarse* path, so verify it in the state it actually applies to — with **no heartbeat
+written in the last ten minutes**, not merely with the hook uninstalled:
+
+1. Confirm nothing recent is in the sessions directory (an empty listing, or files whose mtimes are
+   all older than ten minutes):
+
+   ```sh
+   ls -lT ~/Library/Application\ Support/VibeMenu/ClaudeHeartbeat/sessions/
+   ```
+2. With a `claude` process running, start something that keeps writing under `~/.claude` — an
+   ordinary back-and-forth conversation is enough; a long *silent* tool call is not (that is the
+   case the fallback deliberately can't cover).
+3. While it is working, the status line under **Sleep prevention** reads `On · Claude` and:
+
+   ```sh
+   pmset -g assertions | grep -i PreventUserIdleSystemSleep
+   ```
+
+   shows VibeMenu's assertion held. It drops about ten seconds after Claude goes quiet — that short
+   lapse is the expected baseline behaviour, not a bug. No Session Radar row appears at any point:
+   baseline detection has no per-session signal, and VibeMenu will not invent one.
+
 ### Verifying the quiet-work hold (v0.1.1)
 
 The point of the quiet-work hold is that a **long silent phase** (a long build/test, a long
@@ -197,19 +259,25 @@ the Mac awake, even though the session row falls back to **Quiet**. To see it en
 
 ## 5. Remove it
 
+Remove the **settings entries first**, then the files — deleting the script while the `hooks` entries
+still name it leaves every Claude session invoking a missing file (see
+[step 4](#nothing-appears-check-the-script-is-still-there)).
+
 Restore your backup:
 
 ```sh
 mv ~/.claude/settings.json.bak ~/.claude/settings.json
 ```
 
-…or manually delete the VibeMenu `hooks` entries you added. Optionally delete the state:
+…or manually delete the VibeMenu `hooks` entries you added. Only once they are gone, delete the state:
 
 ```sh
 rm -rf ~/Library/Application\ Support/VibeMenu/ClaudeHeartbeat
 ```
 
-Detection falls back to L1 automatically when no heartbeat files are present.
+Detection falls back to baseline (L1) automatically once no heartbeat is recent any more — deleting
+the files makes that immediate, and leaving them behind only delays it by the ten-minute staleness
+window (or the 15-minute quiet-work cap for a leftover work event).
 
 ---
 

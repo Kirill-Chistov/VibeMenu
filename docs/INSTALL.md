@@ -84,9 +84,18 @@ and VibeMenu keeps only Desktop sessions. See
 ## Optional: reliable Claude detection (heartbeat hook)
 
 VibeMenu's baseline Claude detection works out of the box (process presence + file
-modification times, metadata only). For a **more reliable working/waiting signal**, you can
-manually install the opt-in Claude Code **heartbeat hook**. Setup is a manual, reversible
-copy-paste you do yourself — VibeMenu never edits `~/.claude/settings.json` for you.
+modification times, metadata only). Without a working hook you still get **coarse automatic
+keep-awake**: VibeMenu holds sleep prevention while a `claude` process is running *and* files
+under `~/.claude` are actively changing, and releases about ten seconds after that stops. What
+the baseline can't do is tell a silent build from a finished turn — so there is **no quiet-work
+hold**, and the Session Radar shows **no Claude rows** (baseline metadata carries no session
+identity, and VibeMenu won't invent one). The baseline also takes over on its own if you install
+the hook and it later stops working, once its last heartbeat is more than ten minutes old.
+
+For a **more reliable working/waiting signal** — per-session rows, the bounded 15-minute
+quiet-work hold, and **Needs approval** — you can manually install the opt-in Claude Code
+**heartbeat hook**. Setup is a manual, reversible copy-paste you do yourself — VibeMenu never
+edits `~/.claude/settings.json` for you.
 
 The hook is also what powers **Needs approval**: register the `PermissionRequest` event and a
 session blocked on a permission prompt sorts to the top of the list with a timer. VibeMenu

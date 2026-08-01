@@ -116,6 +116,19 @@ multi-minute build or test run, one long tool call, or a subagent/Task — keeps
 This *quiet-work hold* is bounded by a **15-minute cap** since the last sign of activity, so a
 hung or forgotten session can't keep your Mac awake forever.
 
+The quiet-work hold needs the optional [heartbeat hook](../Support/ClaudeHeartbeat/README.md) —
+only its lifecycle events distinguish "silently working" from "finished". **Without a working
+hook** you get a coarser version: VibeMenu keeps the Mac awake while a `claude` process is running
+and files under `~/.claude` are actively changing, then releases about ten seconds after that
+stops. Because the check runs every couple of seconds, an ongoing conversation stays held
+throughout — what it can't cover is a long *silent* stretch; for those, install the hook or flip
+the manual switch.
+
+The same coarse behaviour kicks in if you installed the hook and it later stopped working (its
+script moved or deleted). VibeMenu waits until the hook's last heartbeat is over ten minutes old
+before falling back, so it never overrides a hook that is genuinely still reporting — including one
+that just reported that Claude finished.
+
 **For Codex: it releases once the session stops looking active** (about a minute of quiet). See
 the next answer for why the two differ.
 
@@ -154,9 +167,12 @@ menu means nothing recent was detected. Common reasons:
   sessions drop off after ~5 minutes, quiet/stale ones after ~2, and anything left is pruned
   at 30.
 - **Codex sessions are off by default** — turn them on in Settings.
-- You're using Claude somewhere VibeMenu's baseline check doesn't observe (baseline relies on
-  a local `claude` process and recent file activity under `~/.claude`). For a more reliable
-  signal, install the optional [heartbeat hook](../Support/ClaudeHeartbeat/README.md).
+- **Claude rows require the optional [heartbeat hook](../Support/ClaudeHeartbeat/README.md).**
+  The baseline check (a local `claude` process + recent file activity under `~/.claude`) can drive
+  coarse keep-awake, but it carries no session identity, so VibeMenu shows no Claude row rather
+  than inventing one. If you *did* install the hook and rows vanished, check that its script is
+  still where `~/.claude/settings.json` points — a hook pointing at a moved or deleted file fails
+  silently ([troubleshooting](../Support/ClaudeHeartbeat/README.md#nothing-appears-check-the-script-is-still-there)).
 - You hid the row (drag right / right-click → Hide). Hidden rows come back on their own if the
   session becomes active again, and restarting VibeMenu clears all hides.
 

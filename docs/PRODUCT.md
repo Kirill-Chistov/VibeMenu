@@ -72,18 +72,23 @@ ADR-approved exception is a session's *title* record, so a row can be named — 
 The thesis is wired end-to-end:
 
 1. **Sleep-prevention loop** — a public power assertion held while an agent works and
-   released when it finishes. **For Claude**, a silent tool/subagent phase is held through a
-   **bounded quiet-work hold** (default 15-minute cap) rather than released the instant Claude
-   looks idle, so long runs don't stall; a genuine finish (`Stop` / session end / process
-   gone) releases promptly. Manual keep-awake always wins
-   (see [`decisions/0010-quiet-work-hold.md`](decisions/0010-quiet-work-hold.md)).
+   released when it finishes. **For Claude with the opt-in heartbeat hook**, a silent
+   tool/subagent phase is held through a **bounded quiet-work hold** (default 15-minute cap)
+   rather than released the instant Claude looks idle, so long runs don't stall; a genuine
+   finish (`Stop` / session end / process gone) releases promptly. **Without a recent heartbeat**
+   — no hook installed, or one that silently stopped writing — Claude still gets coarse automatic
+   keep-awake: held while the process is visible and `~/.claude` metadata keeps changing, released
+   about ten seconds after it stops, but with no quiet-work hold, because L1 metadata can't tell a
+   silent build from a finished turn. A *recent* heartbeat always decides on its own, so a finished
+   turn is never resurrected by the coarse signal. Manual keep-awake always wins (see
+   [`decisions/0010-quiet-work-hold.md`](decisions/0010-quiet-work-hold.md)).
 2. **Agent activity** — Claude Code from process presence and session-file **metadata**
    (mtime), optionally sharpened by the opt-in heartbeat hook; Codex Desktop from
    allowlisted local rollout metadata (opt-in). An **active** Codex session feeds the same
    shared keep-awake decision — but Codex exposes no per-session heartbeat, so it gets **no
    quiet-work hold**: it holds only while it looks active and releases once it goes quiet,
    rather than guessing at a silence VibeMenu can't interpret.
-3. **Trust the Run** — the menu shows the *actual* assertion state, its Manual/Claude/Codex
+3. **Trust the Run** — the menu shows the *actual* assertion state, its Manual/Claude/Codex/ChatGPT Work
    owners, and acquisition failure, rather than echoing the switch back at you.
 4. **Session Radar** — one interleaved Claude/Codex list: four highest-priority rows, one
    provider-neutral **Recent sessions** expansion for up to ten more, elapsed time, safe names,

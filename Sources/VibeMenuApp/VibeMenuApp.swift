@@ -170,7 +170,8 @@ final class AttentionNotificationModel: NSObject, UNUserNotificationCenterDelega
     private func deliver(_ events: [AttentionNotification]) {
         for event in preference.deliverable(events) {
             let content = UNMutableNotificationContent()
-            content.title = "\(event.provider.rawValue) — \(event.displayName)"
+            // Visible provider name, not the stable `rawValue` routing key below (ADR 0017, Amd. 6).
+            content.title = "\(event.provider.displayName) — \(event.displayName)"
             content.body = event.kind.bodyText
             content.sound = .default
             // Provider name is the only routing metadata. The random request id contains no session
@@ -415,7 +416,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // status and toggles it from Settings → General. No persisted duplicate bool.
     let loginItem = LoginItemModel(controller: SMAppServiceLoginItemController())
 
-    // Owned for the app's lifetime; publishes the opt-in **experimental** Claude usage-limits
+    // Owned for the app's lifetime; publishes the opt-in Claude usage-limits
     // snapshot (docs/decisions/0016-claude-usage-limits.md). Display-only — it never touches the
     // keep-awake automation loop. The composite reader resolves the user's chosen source (Auto /
     // Claude Desktop local cache / Claude Code status line), both read live from `UserDefaults`: the
@@ -468,13 +469,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         claude.onSessionsChange = { [attention] sessions in
             attention.recordClaude(sessions)
         }
-        // Codex session activity feeds the *same* shared keep-awake decision (docs/decisions/0017,
-        // Fix 1). An active Codex session holds the automatic assertion; done/idle/stale releases, and
-        // when the feature is off the list is empty ⇒ `.release`, so Codex can't affect sleep. The raw
-        // (un-hidden) session list is used, so hiding a row from the menu is purely display-only.
-        // Deliberately conservative — see `CodexSessionActivity.automationIntent`.
+        // ChatGPT desktop session activity feeds the *same* shared keep-awake decision
+        // (docs/decisions/0017, Fix 1). An active session holds the automatic assertion; done/idle/stale
+        // releases, and when the feature is off the list is empty ⇒ `.release` for both modes, so it
+        // can't affect sleep. The raw (un-hidden) session list is used, so hiding a row from the menu is
+        // purely display-only. Deliberately conservative — see `CodexSessionActivity.automationIntent`.
+        //
+        // The app's two modes are refreshed as **two independent owners** from the same list, so one
+        // mode finishing never releases a hold the other still needs, and the menu can name which one
+        // is holding. Both intents are applied before attention state is recorded.
         codexSessions.onSessionsChange = { [keepAwake, attention] sessions in
-            keepAwake.updateCodexAutomation(CodexSessionActivity.automationIntent(sessions))
+            keepAwake.updateCodexAutomation(
+                CodexSessionActivity.automationIntent(sessions, mode: .codex)
+            )
+            keepAwake.updateChatGPTWorkAutomation(
+                CodexSessionActivity.automationIntent(sessions, mode: .work)
+            )
             attention.recordCodex(sessions)
         }
         // Begin Claude observation at launch (not on first menu appearance). `start()` is
@@ -509,9 +519,9 @@ enum PreferenceKey {
     /// Opt-in local notifications for Claude approval/completion and Codex completion. The app-side
     /// coordinator writes this only after macOS grants permission; unset/false is the default.
     static let agentNotifications = "agentNotifications"
-    /// Opt-in **experimental** Claude usage-limits section (docs/decisions/0016-claude-usage-limits.md).
+    /// Opt-in Claude usage-limits section (docs/decisions/0016-claude-usage-limits.md).
     /// Default **off** — it reads best-effort / version-fragile local Claude data, so it stays
-    /// experimental and off unless the user turns it on. When off, the usage provider does no file I/O
+    /// off unless the user turns it on. When off, the usage provider does no file I/O
     /// and the section never renders.
     static let showClaudeLimits = "showClaudeLimits"
     /// Which local source feeds the usage section: `auto` (prefer fresh Desktop cache, else Claude
@@ -545,9 +555,9 @@ enum PreferenceKey {
     /// `UserDefaults.bool` returns `false` when unset, matching the view default.
     static let showCodexSessions = "showCodexSessions"
 
-    /// Opt-in **experimental** Codex Desktop usage limits (docs/decisions/0017-codex-session-support.md).
-    /// Default **off** — it reads best-effort, version-fragile local Codex data, so it stays
-    /// experimental and off unless the user turns it on. When off the provider does no file I/O and the
+    /// Opt-in ChatGPT usage limits (docs/decisions/0017-codex-session-support.md).
+    /// Default **off** — it reads best-effort, version-fragile local data, so it stays
+    /// off unless the user turns it on. When off the provider does no file I/O and the
     /// section never renders. Kept fully separate from the Claude usage keys. (This key name is
     /// intentionally reused from the earlier Codex attempt so its stale `UserDefaults` value — off —
     /// becomes meaningful again rather than being orphaned.)
@@ -634,13 +644,13 @@ struct MenuContentView: View {
     // Observable Claude detection (L1 + L2) state; `.active` drives built-in automation.
     var claude: ClaudeActivityModel
 
-    // Observable Claude usage-limit snapshot (opt-in experimental; docs/decisions/0016).
+    // Observable Claude usage-limit snapshot (opt-in; docs/decisions/0016).
     var usage: ClaudeUsageLimitModel
 
     // Observable Codex Desktop session list (opt-in; active sessions feed shared automation; ADR 0017).
     var codex: CodexSessionModel
 
-    // Observable Codex Desktop usage-limit snapshot (opt-in experimental; docs/decisions/0017).
+    // Observable Codex Desktop usage-limit snapshot (opt-in; docs/decisions/0017).
     var codexUsage: CodexUsageLimitModel
 
     // Observable manual sleep-prevention state.
@@ -654,12 +664,12 @@ struct MenuContentView: View {
     @AppStorage(PreferenceKey.showThermalStatus) private var showThermalStatus = true
     // Opt-in Codex Desktop session detection; default off (see PreferenceKey.showCodexSessions / ADR 0017).
     @AppStorage(PreferenceKey.showCodexSessions) private var showCodexSessions = false
-    // Opt-in experimental usage-limits section; default off (see PreferenceKey.showClaudeLimits / ADR 0016).
+    // Opt-in usage-limits section; default off (see PreferenceKey.showClaudeLimits / ADR 0016).
     @AppStorage(PreferenceKey.showClaudeLimits) private var showClaudeLimits = false
     // Per-row visibility: newline-joined hidden stable ids. Observed here so hiding a row in Settings
     // updates the menu live (see PreferenceKey.claudeLimitsHiddenIDs / ADR 0016).
     @AppStorage(PreferenceKey.claudeLimitsHiddenIDs) private var claudeLimitsHiddenIDs = ""
-    // Opt-in experimental Codex usage limits; default off (see PreferenceKey.showCodexLimits / ADR 0017).
+    // Opt-in Codex usage limits; default off (see PreferenceKey.showCodexLimits / ADR 0017).
     @AppStorage(PreferenceKey.showCodexLimits) private var showCodexLimits = false
     // Per-row visibility for the Codex usage section; separate from Claude's (see PreferenceKey.codexLimitsHiddenIDs).
     @AppStorage(PreferenceKey.codexLimitsHiddenIDs) private var codexLimitsHiddenIDs = ""
@@ -739,7 +749,7 @@ struct MenuContentView: View {
 
             Divider()
 
-            // Opt-in **experimental** Claude usage-limits section (docs/decisions/0016). It sits at
+            // Opt-in Claude usage-limits section (docs/decisions/0016). It sits at
             // the top of the status stack, above the Session Radar. Dividers are drawn *above* each
             // visible section that has another above it, so no stray/doubled separators appear when a
             // section is hidden.
@@ -749,7 +759,7 @@ struct MenuContentView: View {
                     openSettings()
                 }
             }
-            // Opt-in **experimental** Codex Desktop usage-limits section (docs/decisions/0017),
+            // Opt-in Codex Desktop usage-limits section (docs/decisions/0017),
             // directly beneath Claude Limits and above the AI Agent sessions. Same divider rules.
             if visibility.isDividerAboveCodexLimitsRow {
                 Divider()
@@ -1186,9 +1196,9 @@ struct SessionRow: View {
     }
 }
 
-/// One **Codex Desktop** session row (docs/decisions/0017-codex-session-support.md). Mirrors the
+/// One ChatGPT desktop session row (docs/decisions/0017-codex-session-support.md). Mirrors the
 /// Claude `SessionRow`'s two-line layout — a state-coloured dot, then a content column with the
-/// state word + a clear **"Codex" pill** on top and the project **folder name** below, and an
+/// state word + a clear **"ChatGPT Work" / "Codex" mode pill** on top and the project **folder name** below, and an
 /// elapsed timer pinned to a fixed trailing column — so Claude and Codex rows read as one list.
 ///
 /// **Hide is a view-only control (Fix 2).** Like `SessionRow`, the row can be dragged right past a
@@ -1227,12 +1237,12 @@ struct CodexSessionRow: View {
                 .padding(.top, 4)
 
             VStack(alignment: .leading, spacing: 3) {
-                // Top line: the state word immediately followed by the "Codex" agent pill.
+                // Top line: the state word immediately followed by the mode pill ("ChatGPT Work" / "Codex").
                 HStack(spacing: 6) {
                     Text(session.state.label)
                         .lineLimit(1)
 
-                    Text(session.agent)   // "Codex"
+                    Text(session.agent)   // CodexSessionMode.label — "ChatGPT Work" or "Codex"
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 6)
@@ -1292,9 +1302,9 @@ struct CodexSessionRow: View {
         .contextMenu {
             Button("Hide from VibeMenu") { onDismiss() }
         }
-        .help("Drag right, or right-click → Hide, to remove this Codex session from VibeMenu. VibeMenu "
+        .help("Drag right, or right-click → Hide, to remove this OpenAI session from VibeMenu. VibeMenu "
             + "reads only the project folder name and activity time — never prompts, responses, tool "
-            + "output, paths, or repo URLs; Codex is untouched.")
+            + "output, paths, or repo URLs; the OpenAI app is untouched.")
         // Slide out to the right + fade when removed, matching the swipe direction.
         .transition(.move(edge: .trailing).combined(with: .opacity))
     }
@@ -1311,7 +1321,7 @@ struct CodexSessionRow: View {
     }
 }
 
-/// The opt-in **experimental** Claude usage-limits section (docs/decisions/0016-claude-usage-limits.md).
+/// The opt-in Claude usage-limits section (docs/decisions/0016-claude-usage-limits.md).
 ///
 /// Compact rows matching the app style: the window label on the left; the reset text + percent on the
 /// right; a thin, severity-tinted bar underneath — mirroring the attached usage-bars design. Honesty
@@ -1335,13 +1345,10 @@ struct ClaudeLimitsView: View {
                 Text("Claude Limits")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                // Honest, unmissable "this is best-effort" tag, per the opt-in experimental framing.
-                Text("Experimental")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(Capsule(style: .continuous).fill(Color.primary.opacity(0.06)))
+                // No "Experimental" badge: the section's honesty comes from what it says, not from a
+                // classification chip. The source, freshness/"as of" note, and unavailable state below
+                // (plus the Settings disclosure) still state plainly that this is best-effort,
+                // version-fragile, local-only data.
                 Spacer(minLength: 0)
             }
 
@@ -1453,11 +1460,11 @@ struct UsageBar: View {
     }
 }
 
-/// The opt-in **Codex Desktop** usage-limits section (docs/decisions/0017-codex-session-support.md):
-/// the real 5-hour + weekly `rate_limits` Codex writes to its rollout files. Mirrors `ClaudeLimitsView`
-/// — a labelled, Experimental-tagged section of `CodexUsageLimitRow`s with an honest stale/"as of"
-/// note, and a quiet unavailable state (never a fabricated bar) with a way into Settings. Kept as its
-/// own view and type so Codex and Claude usage never entangle.
+/// The opt-in **ChatGPT limits** section (docs/decisions/0017-codex-session-support.md): the real
+/// `rate_limits` the ChatGPT desktop app writes to its rollout files, shared by its Work and Codex
+/// modes. Mirrors `ClaudeLimitsView` — a labelled section of `CodexUsageLimitRow`s with an honest
+/// stale/"as of" note, and a quiet unavailable state (never a fabricated bar) with a way into
+/// Settings. Kept as its own view and type so ChatGPT and Claude usage never entangle.
 struct CodexLimitsView: View {
     var usage: CodexUsageLimitModel
     /// The user's per-row hide/show choices; hidden rows are filtered before rendering. The parent
@@ -1469,16 +1476,11 @@ struct CodexLimitsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Text("Codex Limits")
+                Text(CodexUsageLimitsMenuCopy.sectionTitle)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                // Honest, unmissable "this is best-effort" tag, per the opt-in experimental framing.
-                Text("Experimental")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(Capsule(style: .continuous).fill(Color.primary.opacity(0.06)))
+                // No "Experimental" badge — same reasoning as `ClaudeLimitsView`. The shared-allowance
+                // note, the turn-bound freshness copy, and the honest empty state carry the caveats.
                 Spacer(minLength: 0)
             }
 
@@ -1502,17 +1504,18 @@ struct CodexLimitsView: View {
                     EmptyView()
                 } else {
                     // No fabricated bars — a quiet, honest unavailable state plus a way into Settings.
+                    // The copy lives in `VibeMenuCore` (`CodexUsageLimitsMenuCopy`) so it is unit-tested
+                    // and stays truthful: only a Codex *turn* writes a new local reading, and VibeMenu
+                    // can never fetch the allowance itself.
                     Button(action: openSettings) {
-                        Text("No Codex usage data yet — open Codex Desktop, then check Settings")
+                        Text(CodexUsageLimitsMenuCopy.emptyState)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help("VibeMenu reads Codex usage limits locally from Codex Desktop's own session "
-                        + "files (the 5-hour and weekly windows only). No network, no cookies, no API "
-                        + "keys, no prompts or responses. Updates while a Codex Desktop session is active.")
+                    .help(CodexUsageLimitsMenuCopy.emptyStateHelp)
                 }
             }
         }
@@ -1651,7 +1654,7 @@ struct SettingsView: View {
     @AppStorage(PreferenceKey.useDesktopTitles) private var useDesktopTitles = false
     // Opt-in Codex Desktop session detection; default off (see PreferenceKey.showCodexSessions / ADR 0017).
     @AppStorage(PreferenceKey.showCodexSessions) private var showCodexSessions = false
-    // Opt-in experimental usage limits; default off (see PreferenceKey.showClaudeLimits / ADR 0016).
+    // Opt-in usage limits; default off (see PreferenceKey.showClaudeLimits / ADR 0016).
     @AppStorage(PreferenceKey.showClaudeLimits) private var showClaudeLimits = false
     // Which local source feeds the section; default Auto (see PreferenceKey.claudeLimitsSource / ADR 0016).
     @AppStorage(PreferenceKey.claudeLimitsSource) private var sourceModeRaw = ClaudeUsageLimitSourceMode.auto.rawValue
@@ -1660,7 +1663,7 @@ struct SettingsView: View {
     @AppStorage(PreferenceKey.claudeLimitsHiddenIDs) private var claudeLimitsHiddenIDs = ""
     // Whether the Claude provider is expanded; persisted under the existing key.
     @AppStorage(PreferenceKey.claudeLimitsSectionExpanded) private var usageSectionExpanded = false
-    // Opt-in experimental Codex usage limits; default off (see PreferenceKey.showCodexLimits / ADR 0017).
+    // Opt-in Codex usage limits; default off (see PreferenceKey.showCodexLimits / ADR 0017).
     @AppStorage(PreferenceKey.showCodexLimits) private var showCodexLimits = false
     // Per-row visibility for the Codex usage section; separate from Claude (see PreferenceKey.codexLimitsHiddenIDs).
     @AppStorage(PreferenceKey.codexLimitsHiddenIDs) private var codexLimitsHiddenIDs = ""
@@ -1963,7 +1966,10 @@ struct SettingsView: View {
             DisclosureGroup(isExpanded: $codexSectionExpanded) {
                 VStack(alignment: .leading, spacing: 0) {
                     SettingsRowDivider()
-                    SettingsToggleRow(title: "Track Codex sessions", isOn: codexSessionsBinding)
+                    SettingsToggleRow(
+                        title: CodexUsageLimitsMenuCopy.settingsTrackSessionsTitle,
+                        isOn: codexSessionsBinding
+                    )
                     SettingsRowDivider()
                     SettingsToggleRow(title: "Show usage", isOn: $showCodexLimits)
 
@@ -1971,13 +1977,24 @@ struct SettingsView: View {
                         SettingsRowDivider()
                         SettingsValueRow("Source") {
                             VStack(alignment: .trailing, spacing: 2) {
-                                Text("Codex Desktop")
+                                Text(CodexUsageLimitsMenuCopy.settingsSourceName)
                                 Text(codexDetectedText)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
                             }
                         }
+
+                        // One shared allowance, refreshed only by a real turn — stated here so the
+                        // user never reads an unchanged row as a stuck or broken reading. The copy is
+                        // unit-tested in `VibeMenuCore` (ADR 0017, Amendment 6).
+                        SettingsRowDivider()
+                        Text(CodexUsageLimitsMenuCopy.sharedAllowanceNote)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 6)
 
                         if !codexDetectedLimits.isEmpty {
                             SettingsRowDivider()
@@ -1989,7 +2006,7 @@ struct SettingsView: View {
                 }
                 .padding(.top, 1)
             } label: {
-                Text("Codex")
+                Text(CodexUsageLimitsMenuCopy.settingsGroupTitle)
                     .font(.headline)
             }
         }

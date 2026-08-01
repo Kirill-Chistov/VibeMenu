@@ -160,8 +160,8 @@ the full path, and never prompt/response/tool/transcript contents
   no longer shown as a menu row.
 
 **Scope & honesty:** L1+L2 feed automation through a **separate pure keep-awake decision**,
-`ClaudeActivityState.automationIntent(heartbeats:signals:now:quietHoldCap:)`, that is
-deliberately **decoupled from the Active/Waiting/Idle display state**
+`ClaudeActivityState.automationIntent(heartbeats:signals:now:quietHoldCap:heartbeatStaleThreshold:l1RecencyThreshold:)`,
+that is deliberately **decoupled from the Active/Waiting/Idle display state**
 (docs/decisions/0010-quiet-work-hold.md). It returns `.hold` or `.release`, which the app
 feeds to `PowerAssertionModel.updateClaudeAutomation(_:)`. The key behavior it fixes: an
 active heartbeat that ages past the 120s display window while the `claude` process is still
@@ -170,10 +170,17 @@ holding sleep prevention **up to a bounded 15-minute cap**, instead of releasing
 the display falls back to Idle. A genuine finish (`Stop`/`SessionEnd`/process gone) releases
 promptly; past the cap it releases so a hung session can't hold forever. `SubagentStop` and
 unknown/future events are treated as "still working" so a subagent gap never causes a false
-release; `Notification` is classified conservatively as waiting-for-user (release). L1 alone
-cannot tell "working" from "waiting for input" (and will have false positives/negatives, e.g.
-a `node`-hosted CLI is missed); L2's opt-in hook is what supplies the reliable internal
-`Active`/`Waiting` distinction. `Active`/`Waiting` are *internal* detection states, not UI
+release; `Notification` is classified conservatively as waiting-for-user (release). When **no
+session's newest heartbeat record is still inside the 600s stale window** (hook not installed, or
+its script missing so every invocation fails silently — stale leftover files in the sessions
+directory do *not* count) the decision degrades to a bounded **L1 fallback**: a visible process plus
+`~/.claude` metadata inside the 10s L1 recency window holds, anything else releases — no quiet-hold
+extension, and the Session Radar still shows nothing, because L1 carries no session identity
+(0010 amendment). Conversely one *recent* record keeps heartbeat semantics in sole charge, so a
+fresh `Stop`/`SessionEnd` releases and is never resurrected by the fresh L1 metadata that the
+finished turn's own transcript write leaves behind. L1 alone cannot tell "working" from "waiting for input" (and will have false
+positives/negatives, e.g. a `node`-hosted CLI is missed); L2's opt-in hook is what supplies the
+reliable internal `Active`/`Waiting` distinction. `Active`/`Waiting` are *internal* detection states, not UI
 labels: there is no aggregate `Claude: …` row any more (see
 [Session Radar](#session-radar-claude)). The session row displays **Quiet** once an active
 heartbeat ages past the 120s display window, which is why a row can read **Quiet** while sleep
@@ -319,17 +326,18 @@ dividers collapse completely rather than reserving an empty/status row. See
 docs/decisions/0017-codex-session-support.md. Codex support is a **fresh** implementation from the
 v0.2 baseline (the earlier attempt was unreliable and is not reused).
 
-Since ADR 0017 **Amendment 3**, an **active** Codex session also feeds sleep prevention: Claude and
-Codex activity flow into one shared keep-awake decision in `PowerAssertionModel` (a provider-neutral
-`holdingSources` set), so either working agent holds the single "VibeMenu Keep Awake" IOKit assertion
-and only *all* releasing drops it. Codex's contribution is the pure, conservative
-`CodexSessionActivity.automationIntent` (only `.active` holds; it ages out on its own). This is separate
-from `AutomationPolicy` — that older lid-open policy core still has **no** Codex field. Codex **usage
-limits** remain display-only and never touch the loop.
+Since ADR 0017 **Amendment 3** and Amendment 6, an **active** ChatGPT desktop session also feeds sleep
+prevention: Claude, Codex-mode, and ChatGPT Work-mode activity flow into one shared keep-awake decision
+in `PowerAssertionModel` (a provider-neutral `holdingSources` set), so any working owner holds the single
+"VibeMenu Keep Awake" IOKit assertion and only *all* releasing drops it. The two ChatGPT modes are
+derived independently from the same list, so one finishing cannot release the other's hold. This is
+separate from `AutomationPolicy` — that older lid-open policy core still has no ChatGPT fields. ChatGPT
+**usage limits** remain display-only and never touch the loop.
 
 - **No aggregate status type.** There is no `AgentStatus`/`AgentPresence` — the section renders rows,
-  not a folded "Active/Idle/Not detected" word. The shared keep-awake decision (Claude + Codex session
-  activity) lives in `PowerAssertionModel`; `AutomationPolicy`'s `PolicyInput` still has no Codex field.
+  not a folded "Active/Idle/Not detected" word. The shared keep-awake decision (Claude + the two
+  ChatGPT session modes) lives in `PowerAssertionModel`; `AutomationPolicy`'s `PolicyInput` still has
+  no ChatGPT field.
 - **Hideable rows (both providers).** Claude and Codex rows can be dragged right / right-clicked to
   hide; hidden rows are filtered *before* the shared cap/interleave, and hiding every row collapses the
   whole section (and its dividers) rather than forcing rows back or showing a misleading empty state.
@@ -337,7 +345,11 @@ limits** remain display-only and never touch the loop.
   decision reads the raw, un-hidden list).
 - **Codex model (pure, tested):** `CodexSessionState` (`active`/`idle`/`done`/`stale`/`unknown`) +
   `CodexSession` (opaque `id`, state, `folderName` = basename of `cwd` only, safe `title`, real
-  `startedAt`/`lastActivity`, `agent = "Codex"`). `CodexSessionState.derive(age:endedWithCompletion:)`
+  `startedAt`/`lastActivity`, and a derived `mode`). `CodexSessionMode` (`.work` / `.codex`) is derived
+  in the reader from the rollout originator — `codex_work_desktop` ⇒ Work, the canonical
+  `Codex Desktop` and any other accepted desktop-family originator ⇒ Codex — and `agent` is computed
+  from it (`"ChatGPT Work"` / `"Codex"`), so the raw originator never reaches the UI (ADR 0017, Amendment 6).
+  `CodexSessionState.derive(age:endedWithCompletion:)`
   is the conservative heuristic: `.active` only on very recent, non-completed activity; `.done` only on
   the reliable `task_complete` marker; otherwise it ages down to `.idle`/`.stale` — **no fake "working".**
 - **Allowlist parser (pure, tested):** `CodexRolloutParser.parse(text:)` reads a strict allowlist of
@@ -357,8 +369,10 @@ limits** remain display-only and never touch the loop.
   titles to sessions by id.
 - **Reader (adapter):** `CodexSessionReader` walks `~/.codex/sessions/**/rollout-*.jsonl`, opens only
   files whose mtime is within a 60-min horizon (a cheap stat), reads each under a byte cap (whole file, or
-  head+tail for a pathological one), **gates on `originator == "Codex Desktop"`** (CLI ignored), dedupes by
-  session id (newest activity wins), sorts most-active-first, caps, and attaches each safe title.
+  head+tail for a pathological one), **gates on the Desktop originator** — the canonical
+  `Codex Desktop` plus the anchored `codex_<segment>_desktop` family, so the unified ChatGPT app's Work
+  sessions are included and the CLI is still ignored — dedupes by session id (newest activity wins),
+  sorts most-active-first, caps, and attaches each safe title.
 - **Presentation (pure, tested):** the menu merges Claude and Codex rows through
   `AgentSessionRadar.present(claude:codex:)`, which **interleaves** the two by activity within one
   shared compact 4-row budget (a stable two-way merge — most-active-first, never re-ordering a
@@ -368,19 +382,22 @@ limits** remain display-only and never touch the loop.
   still names/indexes Codex rows.
 - **Wiring:** `CodexSessionProvider` (a coarse ~5 s poll, self-gated on the default-off
   `showCodexSessions` preference so off ⇒ zero I/O) feeds `CodexSessionModel`; the menu's
-  `AgentSessionsSection` renders the interleaved Claude `SessionRow`s + Codex `CodexSessionRow`s (clear
-  "Codex" pill), or the minimal empty-state line. Internal **subagent** rollouts (`source.subagent`) are
-  dropped so they never phantom a row, and the Desktop-`originator` gate is case-insensitive. The
-  keep-awake loop is untouched.
-- **Codex usage limits (opt-in, shipped):** the real 5-hour + weekly `rate_limits` Codex writes to its
-  rollout `token_count` events **is** a reliable, privacy-safe local source (present in every
-  `token_count` event; a live re-investigation corrected the earlier claim that it was gone).
-  `CodexRateLimitRollout` extracts ONLY the numeric `primary`/`secondary` `used_percent` + `resets_at`
-  behind a `"rate_limits"`/`"originator"` substring pre-check (conversation lines are never parsed);
-  `CodexUsageLimitReader` → `CodexUsageLimitModel` feed a `CodexLimitsView` mirroring Claude Limits.
+  `AgentSessionsSection` renders the interleaved Claude `SessionRow`s + ChatGPT `CodexSessionRow`s (clear
+  per-mode **"ChatGPT Work"** / **"Codex"** pill), or the minimal empty-state line. Internal **subagent** rollouts
+  (`source.subagent`) are dropped so they never phantom a row, and the Desktop-`originator` gate is
+  case-insensitive. The keep-awake loop derives one intent per mode over the same raw list and applies
+  both through the single shared assertion; an `.active` session holds identically in either mode.
+- **ChatGPT usage limits (opt-in, shipped):** the real schema-driven `rate_limits` windows the ChatGPT
+  desktop app writes to rollout `token_count` events are a reliable, privacy-safe local source.
+  `CodexRateLimitRollout` extracts ONLY numeric window fields such as `used_percent`, `window_minutes`,
+  and `resets_at` behind a `"rate_limits"`/`"originator"` substring pre-check (conversation lines are
+  never parsed); `CodexUsageLimitReader` → `CodexUsageLimitModel` feed one shared `CodexLimitsView`.
   Default off, fail-closed to *unavailable*, staleness-labelled, storage/visibility separate from
   Claude. The internal debug/HTTP log (`logs_2.sqlite`, which does intermix prompts/auth) is **not**
-  read. See docs/decisions/0017.
+  read. Work and Codex report the **same** server-side allowance, so the menu shows **one** shared
+  `ChatGPT limits` section fed by the newest reading from either mode — never a Work section beside a
+  Codex one — and a new reading is written only by a real turn, not by opening the app or its usage
+  screen. See docs/decisions/0017.
 
 ### `PowerAssertionManager`
 
@@ -392,7 +409,7 @@ honestly (mirroring `pmset -g assertions`).
 **Public, documented, no privileged helper, sandbox-tolerable.** Lid-closed
 `disablesleep` is explicitly **not** here — see clamshell quarantine below.
 
-**Today:** the manual and Claude/Codex-automation slice is real. A small three-layer seam in
+**Today:** the manual and Claude/ChatGPT-automation slice is real. A small three-layer seam in
 `PowerAssertionManager.swift`, mirroring the thermal slice's shape:
 
 - `PowerAssertionCreating` — a minimal syscall seam (`create`/`release`) with a real
@@ -404,10 +421,11 @@ honestly (mirroring `pmset -g assertions`).
   assertion.
 - `PowerAssertionModel` — a `@MainActor @Observable` surface the `MenuBarExtra` binds to.
   It keeps `manualRequested` (the user's long-term switch preference) separate from
-  `automationRequested` (temporary Claude/Codex ownership) and applies only
+  `automationRequested` (temporary Claude/Codex/ChatGPT Work ownership) and applies only
   `manualRequested || automationRequested` to the manager. Automation is driven by the
-  keep-awake **intent** (`updateClaudeAutomation(_:)` / `updateCodexAutomation(_:)`): `.hold`
-  records that agent as an owner, `.release` drops it — and it **never** mutates
+  keep-awake **intents** (`updateClaudeAutomation(_:)`, `updateCodexAutomation(_:)`, and
+  `updateChatGPTWorkAutomation(_:)`): `.hold` records that source as an owner, `.release` drops it —
+  and it **never** mutates
   `manualRequested`, so manual keep-awake always wins (docs/decisions/0010). The single
   compact **Sleep prevention** row displays only the manual preference and remains interactive
   while automation is holding;

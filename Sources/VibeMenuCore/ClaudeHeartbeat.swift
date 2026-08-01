@@ -445,21 +445,52 @@ extension ClaudeActivityState {
     /// 1. **Process cross-check / process gone.** A heartbeat is never proof of a live
     ///    process, so with no visible `claude` process we always `.release` (rules 2, 7) —
     ///    a stale/crashed heartbeat can never pin sleep prevention.
-    /// 2. Per live session (newest record wins): `SessionEnd` is excluded; a session whose
-    ///    newest event does not `indicatesWorkInProgress` (Stop / Notification /
-    ///    SessionStart) does not hold.
-    /// 3. A work-in-progress session holds iff its newest event is within `quietHoldCap`
-    ///    (rules 3–4). Any one holding session ⇒ `.hold` (a finished session never forces a
-    ///    global release while another session is still working — rule 5).
-    /// 4. Otherwise ⇒ `.release`.
+    /// 2. Reduce to the **newest record per session**.
+    /// 3. Per live session: `SessionEnd` is excluded; a session whose newest event does not
+    ///    `indicatesWorkInProgress` (Stop / StopFailure / Notification / PermissionRequest /
+    ///    SessionStart) does not hold. A work-in-progress session holds iff its newest event is
+    ///    within `quietHoldCap` (rules 3–4). Any one holding session ⇒ `.hold` (a finished
+    ///    session never forces a global release while another is still working — rule 5).
+    /// 4. When nothing holds, ask whether **any** newest record is still inside
+    ///    `heartbeatStaleThreshold`.
+    /// 5. If one is, the hook is demonstrably live and has already said the work is over:
+    ///    heartbeat state stays authoritative ⇒ `.release`. This covers recent `Stop`,
+    ///    `StopFailure`, `SessionEnd`, `Notification`, and `SessionStart` — a fresh finish is
+    ///    never resurrected by fresh L1 metadata (the finished turn's own transcript write
+    ///    leaves that metadata fresh, so this rule is what stops it resurrecting the hold).
+    /// 6. Only when **every** newest record is absent or older than `heartbeatStaleThreshold`
+    ///    does the bounded L1 fallback decide (see below).
     ///
-    /// Note the cap — not the L2 display "stale" window — is this decision's only age bound.
-    /// The stale window (600s) is intentionally *shorter* than the cap (900s) because it
-    /// serves the display ("don't pin the UI to a forgotten heartbeat"), whereas the cap is
-    /// the automation backstop ("hold long silent work, but never forever"). Applying the
-    /// stale window here would cap the hold at 10 minutes and defeat the 15-minute contract,
-    /// so a record past the cap simply does not hold (its own bound already covers "forgotten
-    /// session").
+    /// **L1 fallback (amendment to 0010, 2026-07-26).** The heartbeat hook is optional, and a
+    /// registered hook whose script has been moved or deleted fails *silently* — so "no recent
+    /// heartbeat signal" covers both "never opted in" and "the hook is broken". Releasing outright
+    /// in that case let the Mac sleep mid-run for every user without a working hook, even while L1
+    /// could plainly see a live `claude` process writing session files a second ago. So when no
+    /// newest record is still recent, the intent falls back to L1 exactly as the display does: a
+    /// visible process plus `~/.claude` metadata inside `l1RecencyThreshold` ⇒ `.hold`; stale or
+    /// absent metadata ⇒ `.release`. Deliberately narrow:
+    ///   * It reuses the existing L1 recency window (10s) — no new duration, no new tuning knob.
+    ///   * It gets **no** quiet-hold extension. L1 cannot tell "silently working" from "finished
+    ///     and idle" (0008), so a single fallback hold lapses ~10s after Claude goes quiet.
+    ///     Continuous L1 activity *can* hold continuously — each tick re-reads the metadata, so the
+    ///     10s window rolls forward while files keep changing — but a long **silent** build/tool
+    ///     phase still needs the hook (or manual keep-awake).
+    ///   * The trigger is **staleness, not file count**. Leftover heartbeat files from an
+    ///     uninstalled or broken hook age past the stale window and then stop suppressing the
+    ///     fallback; they can no longer disable it indefinitely. Conversely one *recent* record
+    ///     keeps heartbeat semantics in sole charge.
+    ///   * It changes power only. The Session Radar stays heartbeat-only: L1 carries no session
+    ///     id, title, or project, and nothing is fabricated to fill a row
+    ///     (`sessionsKeepAwakeIntent` therefore no longer mirrors this case — see its note).
+    ///   * L1 is **machine-global and coarse**: process presence plus the newest `~/.claude` mtime
+    ///     across all projects, so the hold reflects aggregate Claude activity, not one session.
+    ///
+    /// Note the cap — not the L2 display "stale" window — remains the only bound on the *hold*
+    /// itself (step 3). The stale window (600s) is intentionally *shorter* than the cap (900s)
+    /// because it serves the display ("don't pin the UI to a forgotten heartbeat"); applying it to
+    /// step 3 would cap the hold at 10 minutes and defeat the 15-minute contract. It is used only
+    /// in step 4, to decide whether a *non-holding* heartbeat is still authoritative — which is
+    /// consistent, since a work event between 600s and 900s holds at step 3 and never reaches it.
     ///
     /// A new active event refreshes the hold implicitly: it becomes the session's newest
     /// record, so its age resets and the cap is measured from it (task rule: active event
@@ -468,20 +499,48 @@ extension ClaudeActivityState {
         heartbeats: [ClaudeHeartbeatRecord],
         signals: ClaudeActivitySignals,
         now: Date,
-        quietHoldCap: TimeInterval = ClaudeActivityState.defaultQuietHoldCap
+        quietHoldCap: TimeInterval = ClaudeActivityState.defaultQuietHoldCap,
+        heartbeatStaleThreshold: TimeInterval = ClaudeActivityState.defaultHeartbeatStaleThreshold,
+        l1RecencyThreshold: TimeInterval = ClaudeActivityState.defaultRecencyThreshold
     ) -> ClaudeAutomationIntent {
         // 1. Process gone / cross-check: never hold without a visible live process.
         guard signals.processPresent else { return .release }
 
-        // 2–4. Any live, non-ended, work-in-progress session within the cap holds.
+        // 2. Newest record per session (defensive dedup — an older event must never outvote a
+        // newer one for the same session).
+        var sawRecentHeartbeat = false
         for record in latestRecordPerSession(heartbeats) {
-            if record.event.isSessionEnd { continue }            // explicit finish → excluded
-            guard record.event.indicatesWorkInProgress else { continue }  // finished/waiting
             // Clamp a future timestamp (clock skew) to 0 so it counts as fresh, not expired.
             let age = max(0, now.timeIntervalSince(record.updatedAt))
-            if age <= quietHoldCap { return .hold }
+
+            // 3. Unchanged heartbeat hold: any live, non-ended, work-in-progress session within
+            // the quiet-work cap holds — including one between the stale window and the cap.
+            if !record.event.isSessionEnd,                       // explicit finish → excluded
+               record.event.indicatesWorkInProgress,             // finished/waiting → no hold
+               age <= quietHoldCap {
+                return .hold
+            }
+
+            // 4. Nothing held here; note whether this session's newest record is recent enough
+            // for heartbeat state to still be authoritative. `SessionEnd` counts: a session that
+            // just ended is a live signal that the work is over, not a missing one.
+            if age <= heartbeatStaleThreshold { sawRecentHeartbeat = true }
         }
-        return .release
+
+        // 5. A recent newest record (Stop / StopFailure / SessionEnd / Notification /
+        // PermissionRequest / SessionStart) means the hook is working and has already reported
+        // the finish. Heartbeat state stays authoritative, so fresh L1 metadata — which the
+        // finished turn's own transcript write leaves behind — can never resurrect the hold.
+        if sawRecentHeartbeat { return .release }
+
+        // 6. Every newest record is absent or older than the stale window: there is no recent
+        // authoritative heartbeat signal at all (hook not installed, or its script is missing so
+        // every invocation fails silently, possibly leaving stale files behind) ⇒ conservative L1
+        // fallback: hold only while the process is visible *and* `~/.claude` metadata is inside
+        // the short L1 recency window. No quiet-hold extension — L1 cannot distinguish silent
+        // work from a finished turn — and no Session Radar row, because L1 has no session identity.
+        let l1 = evaluate(signals: signals, now: now, recencyThreshold: l1RecencyThreshold)
+        return l1 == .active ? .hold : .release
     }
 
     /// Pure, I/O-free DEBUG diagnostics for the L2 decision: the process flag, the

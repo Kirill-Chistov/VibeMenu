@@ -137,7 +137,10 @@ public final class CodexSessionReader: CodexSessionReading, @unchecked Sendable 
                 lastActivity: summary.lastActivity,
                 // Safe curated title from session_index.jsonl (already sanitised); nil ⇒ folder fallback.
                 title: titles[summary.sessionID],
-                endedWithCompletion: summary.endedWithCompletion
+                endedWithCompletion: summary.endedWithCompletion,
+                // Derive the Work/Codex row pill here, at the one place the originator is known, so
+                // the raw originator string is dropped immediately and never reaches the UI.
+                mode: CodexSessionMode.derive(originator: summary.originator)
             )
             // A session id can appear in more than one rollout file (thread forking); keep the row
             // with the newest activity.

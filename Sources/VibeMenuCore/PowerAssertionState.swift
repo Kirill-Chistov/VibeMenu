@@ -27,18 +27,35 @@ public enum PowerAssertionState: String, Equatable, Sendable, CaseIterable {
 }
 
 /// The user-visible owners of VibeMenu's sleep-prevention request, in intentional
-/// presentation order. This is separate from the provider-neutral automation source
-/// type because the manual preference is also an owner from the user's perspective.
+/// presentation order (Manual → Claude → Codex → ChatGPT Work). This is separate from the
+/// provider-neutral automation source type because the manual preference is also an owner
+/// from the user's perspective.
+///
+/// The ChatGPT desktop app's two modes appear as **two owners**, never one merged entry: they
+/// hold and release independently, so collapsing them in the label would misreport which work
+/// is actually keeping the Mac awake.
 public enum PowerAssertionOwner: String, Equatable, Sendable, CaseIterable {
     case manual
     case claude
     case codex
+    case chatGPTWork = "work"
 
     public var displayName: String {
         switch self {
         case .manual: "Manual"
         case .claude: "Claude"
         case .codex: "Codex"
+        case .chatGPTWork: "ChatGPT Work"
+        }
+    }
+
+    /// The owner that a given automation source presents as. Total and exhaustive, so a new
+    /// keep-awake source can never silently fall through into an unrelated owner's label.
+    public init(source: AgentKeepAwakeSource) {
+        switch source {
+        case .claude: self = .claude
+        case .codex: self = .codex
+        case .chatGPTWork: self = .chatGPTWork
         }
     }
 }
@@ -47,7 +64,7 @@ public enum PowerAssertionOwner: String, Equatable, Sendable, CaseIterable {
 /// It is derived from the manager's actual state, not just from requested ownership.
 public struct PowerAssertionPresentationState: Equatable, Sendable {
     public let assertionState: PowerAssertionState
-    /// Current requested owners, ordered Manual → Claude → Codex. For a failed
+    /// Current requested owners, ordered Manual → Claude → Codex → ChatGPT Work. For a failed
     /// acquisition these are the owners that requested the unsuccessful assertion.
     public let owners: [PowerAssertionOwner]
 
@@ -62,8 +79,10 @@ public struct PowerAssertionPresentationState: Equatable, Sendable {
         if manualRequested {
             owners.append(.manual)
         }
+        // Ordered by `AgentKeepAwakeSource.allCases` (Claude → Codex → ChatGPT Work), not by the
+        // order the caller happened to pass, so the label is stable whichever source held first.
         for source in AgentKeepAwakeSource.allCases where automationSources.contains(source) {
-            owners.append(source == .claude ? .claude : .codex)
+            owners.append(PowerAssertionOwner(source: source))
         }
         self.owners = owners
     }

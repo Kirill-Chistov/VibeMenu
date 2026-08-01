@@ -4152,3 +4152,423 @@ locally excluded via `.git/info/exclude`).
 `dist/VibeMenu-v0.3-macos-arm64.zip` app. Only after that gate passes: create annotated tag `v0.3` on
 this commit, push it, and publish the GitHub Release "VibeMenu v0.3" with the archive attached. The
 release remains **unsigned and not notarized**.
+
+## 2026-07-26 — Debug pass: Claude Session Radar had no rows; Codex usage source dried up
+
+Focused pre-release debugging pass on two reported failures. No release action was taken.
+
+**Claude Session Radar showed nothing while Claude was running — root cause: a registered hook
+pointing at a deleted script.** Live, metadata-only evidence separated the layers cleanly: the exact
+process name `claude` still matches (so L1 process detection is intact), `~/.claude/projects/**`
+session-file mtimes were seconds old (L1 recency intact), `~/.claude/settings.json` still carried all
+eleven VibeMenu hook entries with a correct absolute, quoted path — but
+`~/Library/Application Support/VibeMenu/ClaudeHeartbeat/` (script *and* `sessions/`) no longer existed,
+so every hook invocation failed silently. Because both the radar store and `automationIntent` are fed
+**only** by heartbeat records, the result was zero Claude rows and no Claude keep-awake owner, while the
+menu still read Claude **Active** from L1 — a half-working appearance rather than a visible failure.
+Nothing in `~/.claude` had changed shape (no layout/schema drift): re-copying the committed script to
+the path the existing entries name restored delivery immediately, with no settings edit and no Claude
+restart.
+
+**Codex usage limits are stale because the only approved source stopped being written.** The newest
+`~/.codex/sessions/**/rollout-*.jsonl` (and `session_index.jsonl`) write is 2026-07-24T17:28, while
+Codex Desktop was running during this pass and only its `logs_2.sqlite` / `state_5.sqlite` stores were
+updating — both explicitly forbidden sources. Everything on disk is therefore older than
+`CodexUsageLimitReader.defaultRecencyHorizon` (24 h), so `.unavailable` is the **correct** reader
+output; the reader, the 5 s provider tick, and the launch-time `start()` were all verified healthy.
+A fresher reading cannot be obtained under the current invariants: `rate_limits` only appears when
+Codex itself runs a turn, and a personal allowance lookup would need an authenticated OpenAI request
+(AGENTS.md §8). Nothing was faked; only the copy was made truthful.
+
+Changes:
+
+- `Sources/VibeMenuCore/CodexUsageLimit.swift` — new pure `CodexUsageLimitsMenuCopy`: an empty-state
+  line that no longer promises that *opening* Codex Desktop produces data (only a Codex turn writes a
+  reading), plus help text that derives its stated freshness window from
+  `CodexUsageLimitReader.defaultRecencyHorizon`, says VibeMenu never contacts OpenAI, and drops the
+  stale "5-hour and weekly windows only" claim (the reader has been schema-driven since the ADR 0017
+  amendment).
+- `Sources/VibeMenuApp/VibeMenuApp.swift` — `CodexLimitsView` empty state now renders that core copy
+  instead of inline strings. Display-only; no reader, timer, or automation change.
+- `Tests/VibeMenuCoreTests/CodexUsageLimitTests.swift` — regression test pinning the truthfulness
+  properties of that copy (local/turn-written source, horizon matches the reader constant, no-network
+  statement, no fixed window pair).
+- `Tests/VibeMenuCoreTests/ClaudeHeartbeatTests.swift` — regression test
+  `noHeartbeatRecordsMeansNoClaudeHoldAndNoRadarRow`: with no heartbeat records but a live process and
+  1-second-old L1 metadata, the display reads `.active` while automation `.release`s and the radar store
+  is empty. This pins the hook dependency that made the failure invisible, and is the guard rail for any
+  future decision to let L1 hold on its own (a power-assertion change ⇒ product approval, AGENTS.md).
+- `Support/ClaudeHeartbeat/README.md` — setup/troubleshooting fix for exactly this failure mode: use the
+  fully expanded path (single quotes never expand `~`), keep the script where the entries point, a
+  "nothing appears? check the script is still there" check with the repair, and a removal step that
+  takes the settings entries out **before** deleting the files.
+
+Verification (real output):
+
+- `swift build` → **Build complete! (15.62s)**
+- `scripts/test.sh` → **622 tests in 91 suites passed** (620 before; both new tests observed passing).
+- `xcodebuild … -configuration Debug -derivedDataPath ./.derivedData build` → **BUILD SUCCEEDED**.
+- `git diff --check` → clean.
+- Live smoke (Debug bundle, ~15 s, then stopped): its own path-free `claude-detect` diagnostics read
+  `process=true, heartbeat=Active age=1s sessions=1, result=Active` / `intent=hold` on successive ~2 s
+  ticks, and `pmset -g assertions` showed that instance holding its own `VibeMenu Keep Awake` assertion
+  11 s after launch — so hook delivery, heartbeat parsing, session folding, and automatic sleep
+  ownership are all confirmed end-to-end without opening the menu. Only VibeMenu-owned heartbeat fields,
+  process names, and file mtimes were read.
+- Not verified here: the popover's rendered Claude row and the Codex section's new empty-state line
+  (menu-bar popover is not accessibility-inspectable in this environment) — owner UI check.
+
+**Release-state note (premise correction).** The task assumed v0.3 was untagged/unpublished and asked for
+docs to say so. Evidence says otherwise: annotated tag `v0.3` → `deb0dc1` exists locally **and on
+origin**, and GitHub Release "VibeMenu v0.3" is published (not a draft, 2026-07-26T11:45:09Z) with
+`VibeMenu-v0.3-macos-arm64.zip` attached. The release-state docs are therefore already correct and were
+left untouched. The changes above put `master` ahead of the `v0.3` tag, which is the documented normal
+state; the local `dist/VibeMenu-v0.3-macos-arm64.zip` still matches the tag but no longer matches
+`master`, so any future build must be repackaged rather than reused.
+
+**Next step.** Owner decision on the ranked findings — chiefly whether L1-only detection should hold
+sleep prevention (a power-assertion change needing a proposal + ADR), and whether Codex Desktop still
+writes rollouts at all (run one Codex turn, then re-check `~/.codex/sessions/`). If it does not, both
+Codex features lose their only approved source and that needs a product call, not a parser change.
+
+## 2026-07-26 — Bounded L1 fallback for automatic Claude keep-awake (ADR 0010 amendment)
+
+Follow-up to the debug pass above, implementing the owner-directed resolution of its open question:
+automatic Claude keep-awake must not be wholly dependent on the optional heartbeat hook. Post-v0.3
+maintenance work on `master`; **not committed**.
+
+**Behaviour implemented.** `ClaudeActivityState.automationIntent` gains one narrow branch:
+
+1. No visible `claude` process ⇒ `.release`, unchanged and still evaluated first.
+2. Heartbeat records present ⇒ **unchanged ADR 0010 semantics** (work events hold within the
+   15-minute quiet cap; `Stop`/`StopFailure`/`SessionEnd`/`Notification`/`SessionStart` release).
+3. Record list **empty** ⇒ bounded L1 fallback: the existing L1 rule (`evaluate(signals:now:
+   recencyThreshold:) == .active`) decides, so a visible process plus `~/.claude` metadata inside
+   `defaultRecencyThreshold` (10s) holds, and stale or absent metadata releases.
+4. The fallback gets **no** quiet-hold extension — the 15-minute cap stays hook-only, because L1
+   cannot separate silent work from a finished turn (ADR 0008). No new duration was introduced; the
+   existing L1 window is reused and passed through from `ClaudeActivityProvider.recencyThreshold`.
+5. Power only. The Session Radar is untouched and remains heartbeat-only: no session id, title,
+   project, state, or row is fabricated from coarse L1. This is the single deliberate divergence
+   from `sessionsKeepAwakeIntent`, whose equivalence with `automationIntent` still holds for every
+   heartbeat-derived input; both sides are documented in code.
+
+Manual keep-awake semantics are untouched (`effectiveKeepAwake == manualRequested ||
+automationRequested`; automation never writes `manualRequested`).
+
+Changes:
+
+- `Sources/VibeMenuCore/ClaudeHeartbeat.swift` — the empty-records L1 fallback branch plus a new
+  `l1RecencyThreshold` parameter (defaulted, so existing call sites are unaffected), and the doc
+  comment recording why it is scoped this narrowly.
+- `Sources/VibeMenuCore/ClaudeActivityProvider.swift` — passes its own injectable `recencyThreshold`
+  into `automationIntent` so display and automation share one window.
+- `Sources/VibeMenuCore/ClaudeSession.swift` — notes the one deliberate radar/automation divergence
+  on `sessionsKeepAwakeIntent`.
+- `Tests/VibeMenuCoreTests/ClaudeHeartbeatTests.swift` — the previous no-heartbeat characterization
+  test is replaced by six regression tests: fresh L1 + process ⇒ hold; stale/absent metadata ⇒
+  release (with the 10s boundary and the explicit absence of any 120s/600s/900s grace); no process ⇒
+  release even with fresh metadata; every heartbeat finish event ⇒ release despite fresh L1 metadata;
+  heartbeat work events keep the full bounded quiet-hold (300s/900s hold, 901s release) with stale
+  L1; and the fallback holds power while `ClaudeSessionStore` stays empty. One neighbouring comment
+  (`noHeartbeatsReleases`) was corrected to say bare process presence still never holds.
+- `docs/decisions/0010-quiet-work-hold.md` — status marked amended plus an "Amendment (2026-07-26):
+  bounded L1 fallback" section with context, the five scope limits, consequences, and the two known
+  limits (no silent-gap bridging; leftover heartbeat files from a partially-removed hook suppress the
+  fallback until deleted).
+- `docs/ARCHITECTURE.md`, `docs/PRODUCT.md`, `docs/AGENT_CONTEXT.md`, `docs/FAQ.md`,
+  `docs/INSTALL.md`, `README.md`, `Support/ClaudeHeartbeat/README.md` — wording corrected only where
+  it now misstates behaviour: automatic Claude keep-awake degrades to coarse L1 without the hook,
+  while per-session Session Radar rows, working/waiting states, **Needs approval**, and the
+  quiet-work hold still require it. Two sentences in the heartbeat README's new troubleshooting
+  section previously said a broken hook leaves *no* Claude keep-awake owner; that is no longer true
+  and now reads "falls back to coarse keep-awake". No fabricated per-session tracking is claimed
+  anywhere.
+
+Verification (real output):
+
+- `scripts/test.sh --filter ClaudeAutomationIntentTests` → **25 tests in 1 suite passed**.
+- `swift build` → **Build complete!**
+- `scripts/test.sh` → **627 tests in 91 suites passed** (622 before).
+- `xcodebuild … -configuration Debug -derivedDataPath ./.derivedData build` → **BUILD SUCCEEDED**.
+- `git diff --check` → clean.
+- Not verified here: live behaviour of the fallback in the running app (no menu-bar popover
+  inspection in this environment, and the local hook is currently installed and working, so the
+  empty-records path does not occur on this machine). The pure decision is exhaustively unit-tested;
+  the owner smoke check is "temporarily remove the hook entries, confirm Claude still shows as a
+  keep-awake owner while actively working and releases shortly after it stops, with no Claude rows."
+
+**Next step.** Owner UI smoke check of that fallback path, plus the still-open Codex question from
+the previous entry (does Codex Desktop still write rollouts at all?). Nothing is committed.
+
+## 2026-07-27 — Correction: the L1 fallback trigger is heartbeat *staleness*, not an empty file list
+
+Correction to the previous entry's amendment, on `master`; **not committed**. No product-behaviour
+question was reopened — this fixes an implementation defect that made the approved behaviour
+unreachable in the very situation it was written for.
+
+**Defect.** The fallback branch triggered on `heartbeats.isEmpty`, but
+`ClaudeActivityProvider.readHeartbeatRecords` returns *every* decodable file in the sessions
+directory, including stale and `SessionEnd` leftovers. A hook that stops writing (script moved or
+deleted — the 2026-07-26 incident) almost always leaves its last per-session files behind, so the
+list is not empty and the fallback stayed switched off **indefinitely**. The amendment's own "known
+limit (b)" recorded this as accepted; on review it is not acceptable, because it removes the fallback
+from the exact failure mode that motivated it.
+
+**Behaviour now implemented** (`automationIntent`, in order):
+
+1. No visible `claude` process ⇒ `.release` — unchanged, still first.
+2. Reduce to the newest record per session.
+3. **Unchanged ADR 0010 hold:** any live, non-ended, work-in-progress session within the 15-minute
+   `quietHoldCap` ⇒ `.hold`. The 600–900s band still holds here and never reaches step 4.
+4. When nothing holds, check whether any newest record is still inside `heartbeatStaleThreshold`.
+5. If one is ⇒ `.release`: heartbeat state stays authoritative. Recent `Stop`, `StopFailure`,
+   `SessionEnd`, `Notification`, `PermissionRequest`, and `SessionStart` all count, so a fresh finish
+   is never resurrected by the fresh L1 metadata that the finished turn's own transcript write leaves
+   behind.
+6. Only when **every** newest record is absent or older than `heartbeatStaleThreshold` does the
+   existing L1 rule decide: visible process + `~/.claude` metadata inside `l1RecencyThreshold` ⇒
+   `.hold`; stale or missing ⇒ `.release`.
+
+Still no quiet-work extension for L1, no new duration (the existing 600s stale window and 10s L1
+window are reused), no Session Radar row, and no change to the 15-minute cap or to manual keep-awake.
+
+Changes:
+
+- `Sources/VibeMenuCore/ClaudeHeartbeat.swift` — single-pass rewrite of the decision body per the
+  order above, plus a defaulted `heartbeatStaleThreshold` parameter; doc comment rewritten to state
+  the staleness trigger, the finish-authority rule, and why the stale window bounds only step 4.
+- `Sources/VibeMenuCore/ClaudeActivityProvider.swift` — passes its configured
+  `heartbeatStaleThreshold` (alongside `recencyThreshold`) into `automationIntent`.
+- `Sources/VibeMenuCore/ClaudeSession.swift` — divergence note on `sessionsKeepAwakeIntent` restated
+  in terms of "no recent heartbeat record" rather than "no records".
+- `Tests/VibeMenuCoreTests/ClaudeHeartbeatTests.swift` — fallback tests reworked and extended:
+  stale leftover *work* files (901s, 3600s) and stale leftover *finish* files (601s, every finish/
+  waiting/lifecycle event) no longer suppress the fallback; fresh finish events stay authoritative at
+  1s and at the 600s boundary; the 600–900s work band holds; multi-session cases (one fresh finish
+  suppresses the fallback, one in-cap work event still holds globally); process-absent releases on
+  every path; the exact 10s L1 boundary (9.999/10/10.001) with and without leftovers; radar stays
+  empty during an L1-only hold, including one caused by leftovers. Added one integration-style test
+  that writes **sanitized fixtures** to a temp directory, reads them via
+  `ClaudeActivityProvider.readHeartbeatRecords`, and feeds the result into `automationIntent` — the
+  path that made `isEmpty` wrong. No real runtime files are read or written by tests.
+- `docs/decisions/0010-quiet-work-hold.md` — amendment heading/date corrected, decision restated as
+  the six-step order, "staleness, not file count" recorded as scope limit 1 with the reason the first
+  implementation was wrong, and the known limits rewritten (leftovers now merely delay the fallback
+  by the stale window; L1 is machine-global/coarse; continuous L1 activity can hold continuously
+  because the 10s window rolls forward each tick).
+- `docs/ARCHITECTURE.md` (incl. the `automationIntent` signature), `docs/AGENT_CONTEXT.md`,
+  `docs/PRODUCT.md`, `docs/FAQ.md`, `docs/INSTALL.md`, `README.md` — "no heartbeat records" wording
+  replaced with "no recent heartbeat signal", plus the broken-hook case and the finish-authority rule.
+- `Support/ClaudeHeartbeat/README.md` — troubleshooting now says a broken hook falls back once its
+  last heartbeat ages out (within ten minutes) and that deleting leftovers is tidy-up, not a
+  requirement; the removal step's closing line matches; **new owner smoke-test section "Checking the
+  baseline fallback"** describing the real trigger (no heartbeat written in the last ten minutes),
+  the `ls -lT` precondition check, an ongoing conversation as the stimulus rather than a silent tool
+  call, `pmset -g assertions` while it works, the ~10s release, and no radar row at any point.
+
+The Codex usage-copy work from the previous entries is untouched and still truthful.
+
+Verification (real output):
+
+- `scripts/test.sh --filter 'ClaudeAutomationIntentTests|ClaudeHeartbeatDecodeTests|SessionAggregateEquivalenceTests'`
+  → **39 tests in 3 suites passed**.
+- `swift build` → **Build complete!**
+- `scripts/test.sh` → **633 tests in 91 suites passed** (627 before).
+- `xcodebuild -project App/VibeMenu.xcodeproj -scheme VibeMenu -configuration Debug -derivedDataPath ./.derivedData build`
+  → **BUILD SUCCEEDED**.
+- `git diff --check` → clean.
+- Not verified here: live behaviour in the running app. The app was built but not launched, no menu
+  or `pmset` state was observed, and no real Claude settings, hook installation, or heartbeat files
+  were modified — the local hook remains installed and working, so the fallback path does not occur
+  on this machine. The decision is pure and exhaustively unit-tested, including through the real
+  reader over temp fixtures.
+
+**Owner smoke checks still outstanding.** (1) With the hook working, confirm a finished turn still
+releases promptly (`On · Claude` → `Off` shortly after `Stop`) — the finish-authority rule. (2) With
+the hook's script removed *and its leftover files left in place*, wait past ten minutes, then confirm
+Claude appears as a keep-awake owner while a conversation is actively running and releases ~10s after
+it goes quiet, with no Claude Session Radar rows — the corrected trigger. Follow
+`Support/ClaudeHeartbeat/README.md` → "Checking the baseline fallback". The open Codex question (does
+Codex Desktop still write rollouts at all?) is unchanged. Nothing is committed.
+
+## 2026-07-28 — Unified ChatGPT app verified; OpenAI naming with Work/Codex modes (ADR 0017 Amd. 6)
+
+**Goal.** Verify the shipped OpenAI session/usage readers end-to-end against the unified ChatGPT
+app's fresh Work and Codex rollouts, then apply the minimal user-visible compatibility update only if
+verification succeeded. Claude and Claude-limits behaviour out of scope and untouched.
+
+**Verification first (no repo change).** A throwaway scratch package outside the repo linked
+`VibeMenuCore` and ran the shipped readers in-process against the real `~/.codex`, printing
+allowlist-only diagnostics (derived state, timings, presence/length of title and folder name, a
+SHA-256 digest of the session id, and the `rate_limits` key structure — never titles, folder names,
+paths, prompts, responses, tool text, or account fields). Results:
+
+- `CodexSessionReader` returned **both** recent sessions with distinct ids: one from `originator`
+  `codex_work_desktop` (Work) and one from `Codex Desktop` (Codex). Both passed the existing
+  `isDesktopOriginator` gate, both were non-subagent, and both resolved a safe `thread_name` title
+  from the existing session index (resolution confirmed by a boolean + length; no title text printed).
+- State derivation was correct: a completed turn read `Done` inside the 15-minute `doneWindow` on the
+  first read and `Stale` on a later read, with `showsElapsedTimer == false` and a `.release`
+  keep-awake intent in both cases.
+- `CodexUsageLimitReader` returned a non-`unavailable` `.rollout` snapshot: exactly **one** `Weekly`
+  row (`slot=primary`, `window_minutes=10080`). The `null` `secondary` and every newer unrelated
+  non-window sibling (deliberately not enumerated here) were ignored and reach nothing.
+- Freshness is **turn-bound**: the newest `token_count` timestamp did not move while the app's usage
+  screen was open, and the snapshot aged `fresh` → `stale` ("as of 20m ago") purely with the clock.
+
+**No existing reader bug was found**, so no parser/wiring fix was needed. The update below is
+presentation-only.
+
+**Changes.**
+- `Sources/VibeMenuCore/CodexSession.swift` — new `CodexSessionMode` (`.work` / `.codex`) derived from
+  the originator's anchored `codex_<segment>_desktop` middle segment (`work` ⇒ Work; everything else
+  accepted by the gate ⇒ Codex); `CodexSession` stores `mode` and computes `agent` from it, so the raw
+  originator never reaches the UI.
+- `Sources/VibeMenuCore/CodexSessionReader.swift` — derives the mode at the one place the originator
+  is known.
+- `Sources/VibeMenuCore/CodexUsageLimit.swift` — menu/Settings copy: shared-allowance + turn-bound
+  wording, a Settings source name naming both modes.
+- `Sources/VibeMenuCore/Attention.swift` — `AttentionProvider.displayName` (`OpenAI` / `Claude`) for
+  notification titles, kept separate from the stable `rawValue` routing key.
+- `Sources/VibeMenuApp/VibeMenuApp.swift` — `OpenAI limits` section header; Settings group `OpenAI`
+  with `Track OpenAI sessions`, the new source name, and the shared-allowance note; per-mode row pill;
+  notification title uses `displayName`; row tooltip reworded.
+- `Tests/VibeMenuCoreTests/CodexSessionModeTests.swift` — new sanitized suites for mode derivation,
+  both modes as independent accepted sessions, mode-invariant keep-awake, the weekly-only/null-secondary
+  reading, unrelated siblings ignored, newest-across-modes wins into one shared section, the copy, the
+  routing-key separation, and legacy `codexLimitsHiddenIDs` compatibility.
+- `docs/decisions/0017-codex-session-support.md` — Amendment 6. `docs/AGENT_CONTEXT.md`,
+  `docs/ARCHITECTURE.md`, `docs/design/settings-ui-research.md` — narrow current-state updates.
+
+**Storage.** No key changed and no migration exists: `showCodexSessions`, `showCodexLimits`,
+`codexLimitsHiddenIDs`, `codexLimitsSectionExpanded`, and the duration-derived `fiveHour`/`weekly`
+`visibilityID`s are all as before. Verified live against the owner's real persisted
+`codexLimitsHiddenIDs = fiveHour`: after the rename that row is still hidden and only `Weekly` shows.
+
+**Commands run.**
+- `swift build` → **Build complete!**
+- `scripts/test.sh` → **646 tests in 94 suites passed** (633 before).
+- `xcodebuild -project App/VibeMenu.xcodeproj -scheme VibeMenu -configuration Debug -derivedDataPath ./.derivedData build`
+  → **BUILD SUCCEEDED**.
+- `git diff --check` → clean.
+- The freshly built Debug `.app` was relaunched and stayed up; `pmset -g assertions` showed
+  `pid <n>(VibeMenu) … "VibeMenu Keep Awake"`, held by Claude activity at the time.
+
+**Verified vs. not verified.** Verified: reader output, derived modes and pills, the single shared
+Weekly row, turn-bound freshness, the preference-compatibility result, the exact user-visible strings,
+builds and tests, and that the app launches. **Not verified here:** the on-screen popover and Settings
+rendering (this menu-bar-only environment does not expose the popover to inspection), and Codex/Work
+*sleep ownership in isolation* — Claude activity held the assertion throughout, so a Work- or
+Codex-only hold could not be attributed. No real ChatGPT/Claude/Codex/VibeMenu settings were modified;
+no network, telemetry, dependency, or new data source was added. Nothing is committed.
+
+**Owner smoke checks outstanding.** (1) Open the menu during a live Work turn and a live Codex turn:
+confirm each row appears without restarting VibeMenu, carries the right **Work**/**Codex** pill, and
+shows a running timer while `Active`. (2) With Claude idle, confirm sleep prevention lists VibeMenu as
+an owner while a Work or Codex turn runs and releases within ~60s of it finishing. (3) Confirm the
+menu header reads **OpenAI limits** with one shared row, and Settings shows the **OpenAI** group,
+**Track OpenAI sessions**, source **ChatGPT (Work + Codex)**, and the shared-allowance note.
+
+## 2026-07-28 — Final naming: `ChatGPT Work` pill, `ChatGPT limits`, and separate Work/Codex sleep owners
+
+**Task.** Pre-release polish on top of the same working tree as the entry above: make the Session
+Radar pill say what it means, stop collapsing the ChatGPT desktop app's two modes into one sleep
+owner, finish the user-visible provider naming, and drop the `Experimental` classification from both
+limits sections. Presentation and ownership only — no new data source, parsing, network access, or
+privacy scope, and session detection / state derivation / activity timing are untouched.
+
+**Problems fixed.**
+1. The Work pill read a bare `Work`, which is too vague beside a `Working` state word.
+2. Sleep prevention reported one merged `Codex` owner for both modes — and, worse, derived it from a
+   whole-list "any session active" intent, so a finishing Work turn could release the assertion while
+   a Codex turn was still running (and vice versa). Only one of the two was ever named.
+3. Limits/Settings still said `OpenAI` / `OpenAI limits` / `Track OpenAI sessions`.
+4. Both limits sections still carried a visible `Experimental` chip.
+
+**Changes.**
+- `Sources/VibeMenuCore/CodexSession.swift` — `CodexSessionMode.work.label` is now `ChatGPT Work`
+  (`.codex` unchanged). Still derived; the raw originator still never reaches the UI.
+- `Sources/VibeMenuCore/AgentKeepAwake.swift` — new `AgentKeepAwakeSource.chatGPTWork` (raw value
+  `"work"`, never stored or displayed), and `CodexSessionActivity.automationIntent` is now
+  **mode-scoped** (`automationIntent(_:mode:)`). The whole-list entry point was **removed**, not kept
+  as a convenience: it was the exact path that collapsed both modes into one owner.
+- `Sources/VibeMenuCore/PowerAssertionState.swift` — `PowerAssertionOwner.chatGPTWork`
+  (`"ChatGPT Work"`), plus a total `PowerAssertionOwner(source:)` mapping. Owner order is driven by
+  `AgentKeepAwakeSource.allCases`, so the label is stable regardless of which source held first:
+  Manual → Claude → Codex → ChatGPT Work.
+- `Sources/VibeMenuCore/PowerAssertionManager.swift` — `updateChatGPTWorkAutomation(_:)` beside the
+  now Codex-only `updateCodexAutomation(_:)`. Still one shared IOKit assertion, still
+  `manualRequested || automationRequested`, and manual ownership is unchanged.
+- `Sources/VibeMenuCore/CodexUsageLimit.swift` — `sectionTitle` (`ChatGPT limits`),
+  `settingsGroupTitle` (`ChatGPT`), and `settingsTrackSessionsTitle` (`Track ChatGPT sessions`) added
+  beside the existing copy so the visible strings are unit-tested. Source name unchanged
+  (`ChatGPT (Work + Codex)`); every explanatory sentence is unchanged.
+- `Sources/VibeMenuApp/VibeMenuApp.swift` — the session callback now refreshes **both** intents from
+  the same raw list before recording attention state; the limits header and Settings labels render the
+  core constants; both `Text("Experimental")` badges removed; stale "experimental" comments trimmed.
+- `Tests/VibeMenuCoreTests/ChatGPTOwnershipTests.swift` — new: pills, per-mode holds, both owners on
+  one assertion, either mode finishing keeping the other's hold, release only after both, the
+  three-agent and manual-first labels, stable ordering from a shuffled source list, cleanup clearing
+  every owner, usage limits still unable to hold, the final naming, the absent `Experimental` badge
+  (source-level guard over `VibeMenuApp.swift`, like the existing shim-script test), and preference-key
+  compatibility.
+- `Tests/VibeMenuCoreTests/AgentKeepAwakeTests.swift`, `CodexSessionModeTests.swift` — updated for the
+  mode-scoped intent; the old "mode changes no power behaviour" test became a per-mode isolation test.
+- `docs/decisions/0017-codex-session-support.md` (Amendment 6 corrected to the shipped naming +
+  separate owners), `docs/AGENT_CONTEXT.md`, `docs/ARCHITECTURE.md`, `docs/PRODUCT.md`,
+  `docs/ROADMAP.md`, `docs/design/settings-ui-research.md` — narrow current-state updates.
+
+**Storage.** Unchanged again: `showCodexSessions`, `showCodexLimits`, `codexLimitsHiddenIDs`,
+`codexLimitsSectionExpanded`, and the `fiveHour`/`weekly` `visibilityID`s all keep their values, and a
+test asserts both the key literals and the decoded row visibility. Internal `Codex*` type names and
+`AttentionProvider.codex.rawValue` are untouched.
+
+**Commands run.**
+- `swift build` → **Build complete!**
+- `scripts/test.sh` → **668 tests in 97 suites passed** (646 before).
+- `xcodebuild -project App/VibeMenu.xcodeproj -scheme VibeMenu -configuration Debug -derivedDataPath ./.derivedData build`
+  → **BUILD SUCCEEDED**.
+- `git diff --check` → clean.
+
+**Verified vs. not verified.** Verified by tests and build: the pill strings, per-mode hold/release
+independence in both directions, one assertion for multiple owners, the exact owner ordering and
+label text, cleanup, the inability of usage-limit state to hold, the final naming constants, the
+absence of an `Experimental` badge in the app source, and preference compatibility. **Not verified
+here:** on-screen rendering of the menu and Settings (this menu-bar-only environment does not expose
+the popover to inspection), and live attribution of a Work-only vs. Codex-only hold in the running
+app. No app was launched for this entry. No network, telemetry, dependency, or new data source was
+added; nothing is committed.
+
+**Left as owner decisions (still say "OpenAI").** `AttentionProvider.codex.displayName` (notification
+titles), the session-row hide tooltip, and the body copy inside the limits section
+(`No recent OpenAI usage data…`, `never contacts OpenAI`, `share one OpenAI allowance`). These sit
+outside the four renames this task scoped, and the last two are literally about OpenAI's servers
+rather than the app, so they were left rather than changed unilaterally.
+
+**Owner smoke checks outstanding.** (1) During a live Work turn, confirm the pill reads
+**ChatGPT Work** and Sleep prevention reads `On · ChatGPT Work`. (2) With Work and Codex both running,
+confirm `On · Codex and ChatGPT Work`, then finish one and confirm the assertion stays held and the
+label drops to the survivor only. (3) With Claude also working, confirm
+`On · Claude, Codex, and ChatGPT Work`, and with the manual switch on,
+`On · Manual, Claude, Codex, and ChatGPT Work`. (4) Confirm the menu header reads **ChatGPT limits**
+with no `Experimental` chip, Claude Limits likewise, and Settings shows **ChatGPT** /
+**Track ChatGPT sessions** / source **ChatGPT (Work + Codex)** with the shared-allowance note intact.
+
+## 2026-08-01 — Maintenance checkpoint review
+
+Reviewed the complete working-tree diff for the ChatGPT naming and independent Work/Codex ownership
+checkpoint. Corrected the Claude heartbeat support README's stale fallback description, and aligned
+the architecture notes and Session Radar comments with the shipped ChatGPT Work/Codex labels and
+mode-scoped ownership. No product behavior, privacy scope, data source, polling, or energy behavior
+was changed during this review.
+
+**Verification.** `swift build` completed successfully; `scripts/test.sh` passed **668 tests in 97
+suites**; focused ownership, mode-derivation, copy/compatibility, and Claude-fallback tests passed;
+the required `xcodebuild ... -derivedDataPath ./.derivedData build` reported **BUILD SUCCEEDED**;
+and `git diff --check` was clean. Verified: sanitized source/test changes contain no personal absolute
+paths or live private data, and generated/runtime files remain ignored. Not verified here: live
+menu-bar popover/Settings rendering or live Work/Codex attribution in a running app.
+
+**Next step.** Investigate the reported VibeMenu energy usage separately; no energy optimization was
+started in this checkpoint.

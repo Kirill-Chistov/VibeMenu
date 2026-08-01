@@ -12,8 +12,9 @@ import os
 //
 // Ownership model: the observable model keeps the user's manual preference separate from the
 // temporary **agent** automation request. The automation request is itself the OR of every holding
-// agent (Claude and/or Codex session activity — docs/decisions/0017, Fix 1). Only the effective OR of
-// manual and automation is applied to IOKit: `manualRequested || automationRequested`.
+// agent (Claude, Codex-mode, and ChatGPT Work-mode session activity — docs/decisions/0017, Fix 1 and
+// Amendment 6). Only the effective OR of manual and automation is applied to IOKit:
+// `manualRequested || automationRequested`, and it still creates exactly one shared assertion.
 //
 // Scope (hard limits — AGENTS.md §9, docs/SECURITY.md):
 //   * Prevents *idle system sleep only*, while the lid is open.
@@ -191,11 +192,12 @@ public final class PowerAssertionModel {
     /// `manualRequested`.
     public private(set) var automationRequested: Bool
 
-    /// The set of agents currently requesting a keep-awake hold (docs/decisions/0017, Fix 1). Claude and
-    /// Codex feed this independently through `updateClaudeAutomation`/`updateCodexAutomation`; the
-    /// effective `automationRequested` is simply "this set is non-empty", so either agent working holds
-    /// the assertion and only *all* of them releasing drops it. It remains private; the UI gets the
-    /// stable read-only `activeHoldingSources` projection below.
+    /// The set of agents currently requesting a keep-awake hold (docs/decisions/0017, Fix 1). Claude,
+    /// Codex, and ChatGPT Work feed this independently through `updateClaudeAutomation`,
+    /// `updateCodexAutomation`, and `updateChatGPTWorkAutomation`; the effective `automationRequested`
+    /// is simply "this set is non-empty", so any one agent working holds the assertion and only *all*
+    /// of them releasing drops it. It remains private; the UI gets the stable read-only
+    /// `activeHoldingSources` projection below.
     private var holdingSources: Set<AgentKeepAwakeSource> = []
 
     @ObservationIgnored private let manager: PowerAsserting
@@ -213,7 +215,7 @@ public final class PowerAssertionModel {
     /// Backward-compatible alias for the effective assertion state.
     public var isActive: Bool { state == .preventingIdleSleep }
 
-    /// Active automation owners in stable product order (Claude, then Codex). The
+    /// Active automation owners in stable product order (Claude, then Codex, then ChatGPT Work). The
     /// mutable ownership set stays private so callers cannot alter the power decision.
     public var activeHoldingSources: [AgentKeepAwakeSource] {
         AgentKeepAwakeSource.allCases.filter { holdingSources.contains($0) }
@@ -300,12 +302,24 @@ public final class PowerAssertionModel {
         updateAgentAutomation(.claude, intent: intent)
     }
 
-    /// Feed the keep-awake **automation intent** from Codex session detection (docs/decisions/0017,
-    /// Fix 1). `.hold` (an active Codex session, per `CodexSessionActivity.automationIntent`) requests
-    /// sleep prevention; `.release` drops Codex's request. Like Claude it never mutates `manualRequested`,
-    /// and it holds only Codex *session activity* — never Codex usage limits, which stay display-only.
+    /// Feed the keep-awake **automation intent** from **Codex**-mode session detection
+    /// (docs/decisions/0017, Fix 1). `.hold` (an active Codex-mode session, per
+    /// `CodexSessionActivity.automationIntent(_:mode:)`) requests sleep prevention; `.release` drops
+    /// only Codex's request. Like Claude it never mutates `manualRequested`, and it holds only
+    /// *session activity* — never usage limits, which stay display-only.
+    ///
+    /// This is scoped to `.codex` alone: ChatGPT Work has its own entry point below, so a Codex turn
+    /// finishing can never release a hold that a live Work turn still needs.
     public func updateCodexAutomation(_ intent: ClaudeAutomationIntent) {
         updateAgentAutomation(.codex, intent: intent)
+    }
+
+    /// Feed the keep-awake **automation intent** from **ChatGPT Work**-mode session detection
+    /// (docs/decisions/0017, Amendment 6). The exact mirror of `updateCodexAutomation`, on its own
+    /// independent source: `.hold` while a Work-mode session is active, `.release` otherwise, and
+    /// neither mode's release touches the other's hold. Never mutates `manualRequested`.
+    public func updateChatGPTWorkAutomation(_ intent: ClaudeAutomationIntent) {
+        updateAgentAutomation(.chatGPTWork, intent: intent)
     }
 
     /// Feed a Claude activity **display** state into the automation owner.

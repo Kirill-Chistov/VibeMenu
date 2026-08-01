@@ -148,6 +148,29 @@ struct CodexUsageLimitModelTests {
         #expect(CodexUsageLimitsSummary.collapsedHeader(enabled: true, freshness: "live") == "On · live")
         #expect(CodexUsageLimitsSummary.collapsedHeader(enabled: true, freshness: nil) == "On")
     }
+
+    /// Regression guard for the empty-state wording (2026-07-26). The previous copy — "No Codex usage
+    /// data yet — open Codex Desktop, then check Settings" — promised something VibeMenu cannot deliver:
+    /// merely launching Codex writes no reading, only a Codex **turn** does, and VibeMenu is never
+    /// allowed to ask OpenAI for the current allowance. The copy must therefore say the data is
+    /// *recent*-bounded and locally written, state the reader's real freshness window, and state the
+    /// no-network limitation.
+    @Test("Empty-state copy is truthful about the local, turn-written source and no-network limit")
+    func emptyStateCopyIsTruthful() {
+        let line = CodexUsageLimitsMenuCopy.emptyState
+        #expect(line.contains("Codex"))
+        #expect(line.contains("locally"))
+        // Must not tell the user that opening the app (rather than running a turn) refreshes the data.
+        #expect(!line.lowercased().contains("open codex"))
+
+        let help = CodexUsageLimitsMenuCopy.emptyStateHelp
+        // The stated freshness window tracks the reader's own horizon, so copy can't drift from code.
+        let hours = Int(CodexUsageLimitReader.defaultRecencyHorizon / 3600)
+        #expect(help.contains("last \(hours) h"))
+        #expect(help.contains("never contacts OpenAI"))
+        // Never claims a fixed 5-hour + weekly pair: the reader is schema-driven (ADR 0017 amendment).
+        #expect(!help.contains("5-hour and weekly"))
+    }
 }
 
 @Suite("CodexRateLimitRollout — schema-driven parser + privacy + no resurrection")

@@ -21,6 +21,18 @@ public enum AttentionProvider: String, Equatable, Hashable, Sendable, CaseIterab
         case .codex: "com.openai.codex"
         }
     }
+
+    /// The user-visible provider name (notification titles). Deliberately **separate** from
+    /// `rawValue`, which stays the stable routing key stored in notification `userInfo` — renaming
+    /// the visible label must not change routing. `codex` covers both Work and Codex sessions of the
+    /// one OpenAI desktop app, so its visible name is the provider, not one of its modes
+    /// (docs/decisions/0017, Amendment 6).
+    public var displayName: String {
+        switch self {
+        case .claude: "Claude"
+        case .codex: "OpenAI"
+        }
+    }
 }
 
 /// A notification-worthy transition. It intentionally has no session id: notification identifiers

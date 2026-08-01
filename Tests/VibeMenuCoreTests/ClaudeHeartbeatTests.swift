@@ -248,6 +248,167 @@ struct ClaudeAutomationIntentTests {
         #expect(ClaudeActivityState.defaultQuietHoldCap == 15 * 60)
     }
 
+    /// L1 signals with `~/.claude` metadata of a given age (`nil` = no session files seen).
+    private func l1(process: Bool = true, metadataAge: TimeInterval?) -> ClaudeActivitySignals {
+        ClaudeActivitySignals(
+            processPresent: process,
+            mostRecentSessionActivity: metadataAge.map { now.addingTimeInterval(-$0) }
+        )
+    }
+
+    /// Convenience: automation intent over heartbeat records *and* L1 signals.
+    private func intent(
+        _ records: [ClaudeHeartbeatRecord], process: Bool = true, metadataAge: TimeInterval?
+    ) -> ClaudeAutomationIntent {
+        ClaudeActivityState.automationIntent(
+            heartbeats: records, signals: l1(process: process, metadataAge: metadataAge), now: now
+        )
+    }
+
+    /// **L1 fallback (0010 amendment, 2026-07-26).** With no *recent* heartbeat record — the hook was
+    /// never installed, or its script was moved/deleted so every invocation fails silently —
+    /// automatic keep-awake degrades to coarse L1 instead of releasing outright: a visible `claude`
+    /// process plus `~/.claude` metadata inside the existing L1 recency window holds.
+    @Test func noHeartbeatsWithFreshL1MetadataHolds() {
+        #expect(intent([], metadataAge: 1) == .hold)
+        // …and it is exactly the L1 display's own `.active` rule, not a second duration.
+        #expect(ClaudeActivityState.evaluate(
+            heartbeats: [], signals: l1(metadataAge: 1), now: now
+        ) == .active)
+    }
+
+    /// **The correction (2026-07-27).** The fallback trigger is *staleness*, not an empty file list:
+    /// leftover heartbeat files from an uninstalled or broken hook must stop suppressing it once they
+    /// age past the stale window. Before this, one forgotten file disabled the fallback forever.
+    @Test func staleLeftoverWorkFilesDoNotSuppressTheFallback() {
+        // A work event past the quiet-hold cap no longer holds on its own…
+        #expect(intent([rec(.preToolUse, age: 901)], metadataAge: nil) == .release)
+        // …and, being stale, it also stops gating the fallback: fresh L1 now holds.
+        #expect(intent([rec(.preToolUse, age: 901)], metadataAge: 1) == .hold)
+        #expect(intent([rec(.preToolUse, age: 3600)], metadataAge: 1) == .hold)
+        #expect(intent([rec(.unknown, age: 3600)], metadataAge: 1) == .hold)
+    }
+
+    /// The same for leftover *finish* files — the shape a hook that stopped firing actually leaves
+    /// behind (its last write was usually a `Stop`/`SessionEnd`). Past the stale window they are no
+    /// longer an authoritative signal about anything.
+    @Test func staleLeftoverFinishFilesDoNotSuppressTheFallback() {
+        #expect(ClaudeActivityState.defaultHeartbeatStaleThreshold == 600)
+        for finished: ClaudeHeartbeatEvent in [.stop, .stopFailure, .sessionEnd, .notification,
+                                               .permissionRequested, .sessionStart] {
+            #expect(intent([rec(finished, age: 601)], metadataAge: 1) == .hold,
+                    "stale \(finished) must not suppress the L1 fallback")
+            #expect(intent([rec(finished, age: 601)], metadataAge: 30) == .release,
+                    "stale \(finished) + stale L1 ⇒ release")
+        }
+    }
+
+    /// The fallback gets **no** quiet-hold extension: L1 cannot tell silent work from a finished turn
+    /// (docs/decisions/0008), so a hold lapses as soon as the metadata leaves the 10s L1 window —
+    /// well inside the 15-minute heartbeat cap, which stays hook-only. (Continuous L1 activity still
+    /// holds continuously: each tick re-reads the metadata, so the window rolls forward.)
+    @Test func noHeartbeatsWithStaleL1MetadataReleases() {
+        #expect(ClaudeActivityState.defaultRecencyThreshold == 10)
+        #expect(intent([], metadataAge: 10) == .hold)     // exactly at the window: still held
+        #expect(intent([], metadataAge: 11) == .release)  // just past it: released
+        #expect(intent([], metadataAge: 120) == .release) // no quiet-work grace…
+        #expect(intent([], metadataAge: 600) == .release) // …and no cap-length hold.
+        // A live process with no session files at all is `.running`, never a hold.
+        #expect(intent([], metadataAge: nil) == .release)
+    }
+
+    /// The process cross-check still comes first, on every path: fresh metadata (with or without
+    /// heartbeat records, fresh or stale) never holds without a visible `claude` process.
+    @Test func processAbsentAlwaysReleases() {
+        #expect(intent([], process: false, metadataAge: 1) == .release)
+        #expect(intent([], process: false, metadataAge: nil) == .release)
+        #expect(intent([rec(.preToolUse, age: 1)], process: false, metadataAge: 1) == .release)
+        #expect(intent([rec(.preToolUse, age: 3600)], process: false, metadataAge: 1) == .release)
+        #expect(intent([rec(.stop, age: 601)], process: false, metadataAge: 1) == .release)
+    }
+
+    /// Heartbeat semantics keep deciding alone whenever a **recent** record exists: an explicit
+    /// `Stop` releases promptly even though the finished turn's own transcript write leaves L1
+    /// metadata fresh. Without this, fresh L1 would resurrect every finished turn.
+    @Test func freshFinishEventsStayAuthoritativeOverFreshL1() {
+        for finished: ClaudeHeartbeatEvent in [.stop, .stopFailure, .sessionEnd, .notification,
+                                               .permissionRequested, .sessionStart] {
+            #expect(intent([rec(finished, age: 1)], metadataAge: 1) == .release,
+                    "fresh \(finished) must release even with fresh L1 metadata")
+            // Still authoritative right up to the stale boundary.
+            #expect(intent([rec(finished, age: 600)], metadataAge: 1) == .release,
+                    "\(finished) at the stale boundary is still authoritative")
+        }
+    }
+
+    /// …and conversely, a heartbeat work event keeps its full bounded quiet-hold regardless of how
+    /// stale L1 metadata is — the fallback neither shortens nor extends the 15-minute cap. The
+    /// 600–900s band matters most: past the display-stale window, still inside the cap, so it must
+    /// hold at step 3 and never reach the staleness question.
+    @Test func heartbeatWorkEventKeepsBoundedQuietHoldRegardlessOfL1() {
+        func withStaleL1(age: TimeInterval) -> ClaudeAutomationIntent {
+            intent([rec(.preToolUse, age: age)], metadataAge: 3600)
+        }
+        #expect(withStaleL1(age: 300) == .hold)   // quiet work, far past the L1 window
+        #expect(withStaleL1(age: 601) == .hold)   // past the 600s stale window…
+        #expect(withStaleL1(age: 899) == .hold)   // …still inside the 900s cap ⇒ holds
+        #expect(withStaleL1(age: 900) == .hold)   // at the cap
+        #expect(withStaleL1(age: 901) == .release)  // past the cap, with stale L1 ⇒ release
+    }
+
+    /// Multi-session: a single **fresh** finish event keeps the whole decision heartbeat-authoritative
+    /// — stale siblings must not open the fallback while the hook is demonstrably still firing.
+    @Test func oneFreshFinishEventSuppressesTheFallbackAcrossSessions() {
+        let records = [rec(.preToolUse, age: 3600, session: "abandoned"),
+                       rec(.stop, age: 5, session: "finished")]
+        #expect(intent(records, metadataAge: 1) == .release)
+        // With *every* session stale, the fallback opens again.
+        let allStale = [rec(.preToolUse, age: 3600, session: "abandoned"),
+                        rec(.stop, age: 3600, session: "finished")]
+        #expect(intent(allStale, metadataAge: 1) == .hold)
+    }
+
+    /// Multi-session: one work event inside the quiet cap still holds globally, whatever the other
+    /// sessions or L1 say (rule 5 — a finished session never forces a global release).
+    @Test func oneWorkEventInsideTheCapStillHoldsAcrossSessions() {
+        let records = [rec(.stop, age: 1, session: "finished"),
+                       rec(.preToolUse, age: 700, session: "working")]
+        #expect(intent(records, metadataAge: 1) == .hold)
+        #expect(intent(records, metadataAge: 3600) == .hold)
+        #expect(intent(records, metadataAge: nil) == .hold)
+    }
+
+    /// The L1 boundary is exact and inclusive at 10s — the one duration the fallback reuses.
+    @Test func exactL1RecencyBoundary() {
+        #expect(intent([], metadataAge: 9.999) == .hold)
+        #expect(intent([], metadataAge: 10) == .hold)
+        #expect(intent([], metadataAge: 10.001) == .release)
+        // Same boundary when only stale leftovers exist.
+        #expect(intent([rec(.stop, age: 3600)], metadataAge: 10) == .hold)
+        #expect(intent([rec(.stop, age: 3600)], metadataAge: 10.001) == .release)
+    }
+
+    /// The Session Radar stays **heartbeat-only**: the L1 fallback may hold power, but it must never
+    /// invent a row, because coarse L1 state carries no session id, title, or project
+    /// (docs/decisions/0011). This is the one deliberate divergence from `sessionsKeepAwakeIntent`.
+    @Test func l1FallbackHoldsPowerButNeverCreatesARadarRow() {
+        #expect(intent([], metadataAge: 1) == .hold)
+
+        var store = ClaudeSessionStore()
+        store.update(records: [], processPresent: true, now: now)
+        #expect(store.sessions.isEmpty)
+        #expect(store.keepAwakeIntent == .release)
+
+        // Same during a fallback hold caused by *stale leftovers*: the records are past the radar's
+        // own prune horizon, so no row survives and nothing is fabricated to replace them.
+        let leftovers = [rec(.stop, age: 3600, session: "old")]
+        #expect(intent(leftovers, metadataAge: 1) == .hold)
+        var leftoverStore = ClaudeSessionStore()
+        leftoverStore.update(records: leftovers, processPresent: true, now: now)
+        #expect(leftoverStore.sessions.isEmpty)
+        #expect(leftoverStore.keepAwakeIntent == .release)
+    }
+
     /// 1. An active event immediately holds the assertion.
     @Test func activeEventImmediatelyHolds() {
         #expect(intent([rec(.userPromptSubmit, age: 1)]) == .hold)
@@ -372,8 +533,11 @@ struct ClaudeAutomationIntentTests {
         #expect(intent([rec(.sessionStart, age: 1)]) == .release)
     }
 
-    /// 14. No heartbeats + no process ⇒ release. No heartbeats + process present ⇒ release
-    ///     (no work-in-progress heartbeat to hold on; L1-only presence does not auto-hold).
+    /// 14. No heartbeats + no process ⇒ release. No heartbeats + process present but **no L1
+    ///     activity metadata at all** ⇒ release: bare process presence never auto-holds, and the
+    ///     0010-amendment L1 fallback needs fresh `~/.claude` metadata too (see the fallback tests
+    ///     at the top of this suite, which supply it). Same for the stale-leftover path — a record
+    ///     list that is merely *old* releases here for want of L1 metadata, not for want of files.
     @Test func noHeartbeatsReleases() {
         #expect(intent([], process: false) == .release)
         #expect(intent([], process: true) == .release)
@@ -476,6 +640,57 @@ struct ClaudeHeartbeatDecodeTests {
         let missing = FileManager.default.temporaryDirectory
             .appendingPathComponent("vibemenu-hb-missing-\(UUID().uuidString)", isDirectory: true)
         #expect(ClaudeActivityProvider.readHeartbeatRecords(in: missing).isEmpty)
+    }
+
+    /// End-to-end over the real reader: **sanitized** heartbeat fixtures written into a temp
+    /// directory (never real runtime files), read through `readHeartbeatRecords`, and fed straight
+    /// into `automationIntent`. This is what the provider does each tick, and it is the shape of the
+    /// bug the 2026-07-27 correction fixes: a directory full of *leftover* files is not the same as
+    /// a live hook, so it must not suppress the L1 fallback forever.
+    @Test func leftoverFilesOnDiskDoNotSuppressTheL1Fallback() throws {
+        let now = Date(timeIntervalSince1970: 3_000_000)
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vibemenu-hb-l1-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        /// Write one heartbeat file in exactly the shape the hook script writes.
+        func write(session: String, event: String, age: TimeInterval) throws {
+            let updatedAt = now.addingTimeInterval(-age).timeIntervalSince1970
+            let json = """
+            {"schemaVersion":2,"updatedAt":\(Int(updatedAt)),"event":"\(event)",\
+            "sessionID":"\(session)","project":"Fixture"}
+            """
+            try json.write(to: dir.appendingPathComponent("\(session).json"),
+                           atomically: true, encoding: .utf8)
+        }
+        func intent(metadataAge: TimeInterval?) -> ClaudeAutomationIntent {
+            ClaudeActivityState.automationIntent(
+                heartbeats: ClaudeActivityProvider.readHeartbeatRecords(in: dir),
+                signals: ClaudeActivitySignals(
+                    processPresent: true,
+                    mostRecentSessionActivity: metadataAge.map { now.addingTimeInterval(-$0) }
+                ),
+                now: now
+            )
+        }
+
+        // Two long-forgotten leftovers: a work event past the cap and a finish past the stale
+        // window. Both decode fine, so the old `heartbeats.isEmpty` trigger never fired.
+        try write(session: "leftover-work", event: "PreToolUse", age: 4000)
+        try write(session: "leftover-finish", event: "Stop", age: 3000)
+        #expect(ClaudeActivityProvider.readHeartbeatRecords(in: dir).count == 2)
+        #expect(intent(metadataAge: 1) == .hold)        // fallback now reachable ⇒ coarse hold
+        #expect(intent(metadataAge: 60) == .release)    // stale L1 ⇒ release (no quiet extension)
+
+        // A hook that starts firing again immediately takes back sole authority: its fresh `Stop`
+        // releases despite the fresh L1 metadata the finished turn leaves behind.
+        try write(session: "live", event: "Stop", age: 2)
+        #expect(intent(metadataAge: 1) == .release)
+
+        // …and a fresh work event from the live session holds again.
+        try write(session: "live", event: "PostToolUse", age: 2)
+        #expect(intent(metadataAge: 60) == .hold)
     }
 }
 

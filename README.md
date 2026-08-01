@@ -45,9 +45,11 @@ It answers three questions at a glance:
 
 - **Automatic keep-awake while an agent is working.** VibeMenu holds a power assertion while
   Claude Code — or an active Codex Desktop session — is working, and releases it when the work
-  finishes. **For Claude**, a long silent phase (a build, a test run, a subagent/Task) keeps the
-  Mac awake up to a bounded cap, so a quiet stretch doesn't drop the assertion mid-run. Codex
-  has no equivalent hold — see [Limitations](#limitations).
+  finishes. **For Claude with the optional hook**, a long silent phase (a build, a test run, a
+  subagent/Task) keeps the Mac awake up to a bounded cap, so a quiet stretch doesn't drop the
+  assertion mid-run; with no recent heartbeat — no hook, or one that stopped working — the hold
+  falls back to a coarser form that covers only visibly active work. Codex has no equivalent hold
+  — see [Limitations](#limitations).
 - **Truthful sleep-prevention status.** The menu shows whether VibeMenu *actually* holds the
   assertion, who owns it (Manual / Claude / Codex), and when acquisition failed — rather than
   just echoing your switch back at you.
@@ -55,7 +57,8 @@ It answers three questions at a glance:
 - **Session Radar** — a shared **four-row** list of recent Claude Code and Codex Desktop sessions
   with their state (working / quiet / waiting / done / stale), elapsed time, and a safe session name.
   One centralized, provider-neutral **Recent sessions** expansion reveals additional rows. Rows can
-  be hidden; nothing is written to disk.
+  be hidden; nothing is written to disk. *Claude rows come from the optional heartbeat hook* —
+  baseline detection has no per-session signal, and VibeMenu doesn't fabricate one.
 - **Needs approval** *(Claude, opt-in hook)* — when Claude asks permission to run a tool, its row
   moves to the top and shows how long it's been blocked, and the **menu-bar icon turns orange** for a
   genuine approval request. Requires the optional heartbeat hook. See [the caveat below](#limitations).

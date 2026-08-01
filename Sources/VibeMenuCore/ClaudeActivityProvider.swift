@@ -239,12 +239,17 @@ public final class ClaudeActivityProvider: ClaudeActivityObserving, @unchecked S
         )
         // The keep-awake automation intent is computed independently of the display state
         // (docs/decisions/0010): an active heartbeat aging past the display window stays a
-        // `.hold` (quiet-but-still-running) until the bounded cap, not a `.release`.
+        // `.hold` (quiet-but-still-running) until the bounded cap, not a `.release`. With no
+        // *recent* heartbeat record it degrades to the bounded L1 fallback, which is why the same
+        // `heartbeatStaleThreshold` and `recencyThreshold` the display uses are passed here
+        // (0010 amendment) — stale leftover files must not suppress the fallback.
         let newIntent = ClaudeActivityState.automationIntent(
             heartbeats: heartbeats,
             signals: signals,
             now: now,
-            quietHoldCap: quietHoldCap
+            quietHoldCap: quietHoldCap,
+            heartbeatStaleThreshold: heartbeatStaleThreshold,
+            l1RecencyThreshold: recencyThreshold
         )
 
         lock.lock()

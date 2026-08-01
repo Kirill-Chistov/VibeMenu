@@ -32,7 +32,8 @@ import Foundation
 // `rate_limits` is written only during an active Codex Desktop session and the rollout format is
 // undocumented / Codex-controlled, so it is version-fragile. The snapshot therefore models
 // `.fresh` / `.stale` / `.unavailable` explicitly and the UI shows a stale/"as of" or unavailable
-// message rather than presenting old data as live. The feature is opt-in and framed Experimental.
+// message rather than presenting old data as live. The feature is opt-in and default-off, and its copy
+// states the local-only source, the turn-bound freshness, and the shared allowance outright.
 
 // MARK: - Severity
 
@@ -273,6 +274,64 @@ public struct CodexUsageLimitSnapshot: Equatable, Sendable, Codable {
         if hours < 24 { return "as of \(hours)h ago" }
         return "as of \(hours / 24)d ago"
     }
+}
+
+// MARK: - Menu copy
+
+/// Pure, deterministic copy for the Codex-usage menu section's **empty state**, kept here (not inline
+/// in the view) so the wording is unit-testable and stays truthful about where the numbers come from.
+///
+/// Why the wording matters: the only approved source is a `token_count.rate_limits` event the
+/// **OpenAI desktop app itself writes** into its local rollout files, and only a reading from the last
+/// `CodexUsageLimitReader.defaultRecencyHorizon` is read. When nothing has written one in that window
+/// there is nothing local to show, and VibeMenu cannot go and ask OpenAI for the current allowance —
+/// that would need an authenticated account request, which the no-network/no-credentials invariant
+/// forbids (AGENTS.md §8, docs/PRIVACY.md). So the empty state must not imply that merely launching
+/// the app, or opening its usage screen, will refresh the numbers: only a real **Work or Codex turn**
+/// produces a new local reading (docs/decisions/0017, Amendment 6).
+public enum CodexUsageLimitsMenuCopy {
+    /// The menu section header. Named for the **app** the numbers come from (the unified ChatGPT
+    /// desktop app, covering both its Work and Codex modes) rather than for one of its modes. Kept
+    /// here, beside the rest of the copy, so it is unit-tested with everything else it must agree
+    /// with. No "Experimental" classification: the caveats live in the copy below, which states the
+    /// local-only source, the turn-bound freshness, and the shared allowance outright.
+    public static let sectionTitle = "ChatGPT limits"
+
+    /// The Settings group title for the same provider.
+    public static let settingsGroupTitle = "ChatGPT"
+
+    /// The Settings toggle that enables session tracking for that app. The storage key behind it is
+    /// unchanged (`showCodexSessions`), so an existing user keeps their choice across the rename.
+    public static let settingsTrackSessionsTitle = "Track ChatGPT sessions"
+
+    /// The one-line empty state shown in place of rows. Deliberately says *recent* (the reading is
+    /// aged out, not necessarily absent) and names the local, turn-written source.
+    public static let emptyState =
+        "No recent OpenAI usage data — written locally only during a Work or Codex turn"
+
+    /// Tooltip for the empty state. Derives the freshness window from the reader's own horizon so the
+    /// copy can never drift from the behaviour, and states the no-network limitation plainly.
+    public static var emptyStateHelp: String {
+        let hours = Int(CodexUsageLimitReader.defaultRecencyHorizon / 3600)
+        return "VibeMenu reads these limits only from the OpenAI desktop app's own local session "
+            + "files — whichever limit windows it reports there — and only from a reading written in "
+            + "the last \(hours) h. \(sharedAllowanceNote) VibeMenu never contacts OpenAI (no "
+            + "network, cookies, API keys, or account data), so it cannot refresh your allowance on "
+            + "its own."
+    }
+
+    /// The Settings/disclosure sentence about what these numbers cover and when they change. Work and
+    /// Codex report the **same** server-side allowance, so VibeMenu shows one shared set of rows; a
+    /// new reading appears only as a by-product of a real turn — opening the app or its usage screen
+    /// writes nothing locally, so the rows can legitimately stay put after a visit there.
+    public static let sharedAllowanceNote =
+        "Work and Codex share one OpenAI allowance, so these rows cover both. A new reading is "
+        + "written only when Work or Codex actually runs a turn — opening the app or its usage "
+        + "screen does not refresh it."
+
+    /// The source name shown in Settings. Names both modes of the one local source, never a raw
+    /// originator string.
+    public static let settingsSourceName = "ChatGPT (Work + Codex)"
 }
 
 // MARK: - Settings header summary

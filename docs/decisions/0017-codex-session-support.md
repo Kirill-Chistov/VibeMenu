@@ -6,7 +6,10 @@
   pass fixed session detection in the running app. **Amendment 3** (same day) further reverses the
   original "display-only for sleep" stance: an active Codex **session** now feeds the shared keep-awake
   decision alongside Claude, and Codex rows became hideable. Codex **usage limits** remain display-only.
-- **Date:** 2026-07-10 (amended same day)
+  **Amendment 6** (2026-07-28) records verified compatibility with the unified ChatGPT app: the
+  user-visible provider is **ChatGPT**, its two session modes are **ChatGPT Work** and **Codex**, they
+  share one allowance section, and each mode is its **own** sleep-prevention owner. No new data source.
+- **Date:** 2026-07-10 (amended same day; further amended 2026-07-12, 2026-07-18, 2026-07-28)
 - **Deciders:** Kirill Chistov (product owner; requested a fresh Codex redo from the stable v0.2 baseline,
   authorised reading Codex's local session files under strict privacy limits, and — after the
   investigation below — chose to keep digging on usage limits while proceeding with the session +
@@ -398,3 +401,99 @@ Pure `AgentSessionRadar` tests cover Claude-only and Codex-only expansion, mixed
 Codex versus Done Claude ranking, higher-priority hidden Claude rows, the four/ten row caps, combined
 and older counts, singular/plural count values, no-overflow behavior, and the fact that filtered
 hidden rows cannot reappear.
+
+## Amendment 6 — 2026-07-28 (unified ChatGPT app: Work + Codex modes, one shared OpenAI allowance)
+
+OpenAI's desktop app is now unified: a single ChatGPT app exposes both a **Work** mode and a **Codex**
+mode. This amendment records what was verified about that app against the shipped readers, and the
+**presentation-only** update that followed. **No new data source, storage location, or privacy scope
+was added** — both modes write to the same already-approved rollout tree, session index, and
+`token_count.rate_limits` object this ADR already governs.
+
+### Verified compatibility (in-process, against the real local rollouts)
+
+The shipped `CodexSessionReader` and `CodexUsageLimitReader` were run in-process against the live
+`~/.codex` after a real Work turn and a real Codex turn, using an allowlist-only diagnostic (derived
+state, timing, presence/length of title and folder name, a digest of the session id, and the
+`rate_limits` window structure — never titles, folder names, paths, or content):
+
+- **Both modes write an approved rollout.** Work carries `originator` `codex_work_desktop`; Codex
+  carries the canonical `Codex Desktop`. Both pass the existing `isDesktopOriginator` gate unchanged
+  (the anchored `codex_<segment>_desktop` family from Amendment 4 already covers Work), both are
+  non-subagent, and both resolve a safe `thread_name` title from the existing
+  `~/.codex/session_index.jsonl`.
+- **Two independent sessions.** The reader returned both rows with distinct session ids and distinct
+  folder names, and derived their states correctly (a completed turn read `Done` inside the 15-minute
+  `doneWindow`, then aged to `Stale` on a later read — no fabricated "working").
+- **One shared allowance.** The newest `rate_limits` reading was weekly-only: `primary` with
+  `window_minutes` 10080 and a **null** `secondary`, alongside several newer non-window siblings
+  (deliberately not enumerated here). The schema-driven reader produced exactly **one** correctly
+  labelled **Weekly** row; the null secondary and every unrelated sibling were ignored, and none of
+  them reaches parsing, the model, the UI, or these docs.
+- **Freshness is turn-bound.** Opening the app's usage screen wrote **no** new approved snapshot: the
+  newest `token_count` timestamp was unchanged across the visit, and the snapshot aged from `fresh`
+  to `stale` ("as of 20m ago") purely with the clock. A new reading appears only as a by-product of a
+  real Work or Codex turn.
+
+**No existing reader bug was found.** The parser, gate, index join, state derivation, schema-driven
+window handling, and fail-closed behaviour all worked as shipped.
+
+### Decision (presentation only)
+
+- **A safe derived session mode.** `CodexSessionMode` (`.work` / `.codex`) is derived once, in the
+  reader, from the rollout originator: the anchored middle segment `work` ⇒ `.work`; the canonical
+  `Codex Desktop` and every other accepted desktop-family originator ⇒ `.codex` (a conservative
+  default — an unknown future family member is never guessed into Work). `CodexSession.agent` is now
+  computed from that mode, so the **raw originator string never reaches the UI** — only the two-case
+  enum does. The mode carries no account, plan, path, or content information.
+- **User-visible naming.** The provider is **ChatGPT**: the Settings group is `ChatGPT`, its toggle is
+  `Track ChatGPT sessions`, the usage section header is `ChatGPT limits`, and its Settings source reads
+  `ChatGPT (Work + Codex)`. Session rows carry a per-mode pill: **ChatGPT Work** or **Codex** — the
+  Work pill is spelled out so it can never read as a generic state word beside `Working`. Notification
+  titles still use `AttentionProvider.displayName`, which remains `OpenAI` pending a separate decision;
+  the stable `rawValue` routing key is untouched either way.
+- **No `Experimental` badge.** Neither the Claude limits nor the ChatGPT limits section carries a
+  visible `Experimental` chip any more. Both remain opt-in and default-off, and every honest
+  explanation stays: the local-only source, the best-effort/version-fragile framing where it already
+  applied, the "as of" staleness note, the no-network limitation, the shared allowance, and the
+  unavailable state that never fabricates a bar. Only the classification label was dropped.
+- **One shared allowance section — never two.** Work and Codex report the same server-side windows,
+  so VibeMenu keeps a single set of rows fed by the newest reading from either mode. Settings and the
+  menu empty state now say so, and say that a new reading is written only when Work or Codex actually
+  runs a turn — opening the app or its usage screen does not refresh it.
+- **Storage is unchanged.** `showCodexSessions`, `showCodexLimits`, `codexLimitsHiddenIDs`, and
+  `codexLimitsSectionExpanded` keep their existing keys, and `visibilityID` keeps its duration-derived
+  `fiveHour`/`weekly` values, so current users lose no enablement or hidden-row choice. There is no
+  key migration.
+- **Internal type names are unchanged** (`CodexSession*`, `CodexUsageLimit*`, `AttentionProvider.codex`
+  and its `rawValue` routing key). Renaming them would be broad churn for no user-visible gain, and
+  `rawValue` is the stable value stored in delivered notifications.
+- **Each mode is its own sleep-prevention owner.** Sleep prevention still follows only an `.active`
+  session, by the same conservative rule for both modes, but the intent is now derived **per mode**
+  (`CodexSessionActivity.automationIntent(_:mode:)`) and fed to two independent
+  `AgentKeepAwakeSource`s (`.codex`, `.chatGPTWork`). There is deliberately no whole-list entry point:
+  a single collapsed owner would let a finishing Work turn release an assertion a live Codex turn
+  still needs, and would misreport which work is keeping the Mac awake. Still **one** shared IOKit
+  assertion; the menu names the owners in the order Manual → Claude → Codex → ChatGPT Work; manual
+  ownership stays independent and still wins. Usage limits remain display-only and can never hold.
+  Claude and Claude-limits behaviour is untouched.
+
+### Testing
+
+Sanitized fixtures only: `codex_work_desktop` ⇒ `.work` (with casing/whitespace tolerance); the
+canonical originator ⇒ `.codex`; an unknown desktop-family originator and a `codex_workspace_desktop`
+look-alike fall back to `.codex`; both modes read back as accepted Desktop sessions with independent
+ids, modes, pills, and folder names, with a mirror proof that no originator text or `SECRET_` marker
+reaches a session; mode survives the turn-timer copy; mode does not change the keep-awake intent; a
+weekly-only reading with a null secondary and the newer siblings yields exactly one `Weekly` row and
+leaks nothing; the newest reading across modes wins into one shared section; the shared-allowance /
+turn-bound copy is asserted; the visible provider rename does not change the notification routing key;
+and legacy `codexLimitsHiddenIDs` values still hide the same rows and round-trip through the unchanged
+encoding.
+
+### Consequences
+
+The rename is visible immediately to existing users, whose stored preferences continue to apply
+(verified live: a real persisted `codexLimitsHiddenIDs` of `fiveHour` still hid exactly that row after
+the change). Because freshness is turn-bound, an unchanged usage row after a visit to the app's usage
+screen is correct behaviour, not a stuck reading — which is precisely why the copy now says so.

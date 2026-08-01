@@ -1,6 +1,9 @@
 # VibeMenu Settings UI research and redesign proposal
 
 **Status:** Option A approved by the product owner on 2026-07-11 and implemented in this worktree.
+Two of its visible labels were later renamed for the unified ChatGPT app: the provider group is now
+**ChatGPT** and its first toggle **Track ChatGPT sessions** (ADR 0017, Amendment 6). The layout,
+structure, and storage keys below are unchanged.
 
 **Reviewed:** 2026-07-11
 
