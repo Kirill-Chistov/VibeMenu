@@ -73,16 +73,16 @@ public protocol ClaudeActivityObserving: AnyObject {
 /// 0008). Wiring that across an unknown-shaped `~/.claude/projects` tree *and* process
 /// lifecycle would over-complicate this slice, so detection still uses a single coarse
 /// `DispatchSourceTimer`. It is a *scheduled, coalesced wakeup with generous leeway*, not a
-/// busy loop: it sleeps between fires and does negligible work each tick (a small heartbeat
-/// read + a bounded stat walk + one process-table read). The interval (`refreshInterval`)
-/// is a short ~2s refresh so active/idle/waiting transitions feel responsive while idle
-/// cost stays negligible.
+/// busy loop: it sleeps between fires and does bounded work each tick (one process-table read plus
+/// cached heartbeat metadata checks). The wider project/session stat walk runs only while a Claude
+/// process is present, when L1 can actually hold. The interval (`refreshInterval`) is a short ~2s
+/// refresh so active/idle/waiting transitions feel responsive.
 ///
 /// TODO(event-driven): replace this timer with FSEvents/`DispatchSource` append events plus
 /// process-lifecycle observation so idle CPU returns to truly zero.
 ///
-/// Concurrency: `@unchecked Sendable` — all mutable state is guarded by `lock`; the
-/// timer fires on a private utility queue and delivers `onChange` on the main queue.
+/// Concurrency: `@unchecked Sendable` — provider state is guarded by `lock`, whole refreshes by
+/// `refreshLock`, and the heartbeat cache by its own lock; callbacks are delivered on the main queue.
 public final class ClaudeActivityProvider: ClaudeActivityObserving, @unchecked Sendable {
     /// Temporary detection refresh interval (see the type doc). ~2s: responsive enough that
     /// `active` ⇄ `idle`/`waiting`/`notDetected` transitions feel prompt, while still a coarse,
@@ -94,12 +94,18 @@ public final class ClaudeActivityProvider: ClaudeActivityObserving, @unchecked S
     /// timers (lightweight-budget friendly; docs/decisions/0006). ~0.5s keeps the refresh
     /// responsive while still allowing coalescing. (Was 2s.)
     public static let refreshLeeway: TimeInterval = 0.5
+    /// Defensive bound on VibeMenu-owned heartbeat files considered per tick. The radar already
+    /// prunes at 30 minutes; 400 distinct sessions inside that horizon is far beyond its UI bounds.
+    static let maxHeartbeatFiles = 400
 
     private let recencyThreshold: TimeInterval
     private let heartbeatActiveThreshold: TimeInterval
     private let heartbeatStaleThreshold: TimeInterval
     private let quietHoldCap: TimeInterval
     private let heartbeatDirectory: URL
+    private let heartbeatReader: ClaudeHeartbeatReader
+    private let processChecker: @Sendable () -> Bool
+    private let sessionActivityReader: @Sendable () -> Date?
     /// Resolves each session's human-readable title from its transcript title record — the one
     /// place VibeMenu opens a Claude transcript, and only for the title field
     /// (docs/decisions/0013-session-title-and-dismiss.md). Injectable; `nil` disables titles
@@ -108,6 +114,7 @@ public final class ClaudeActivityProvider: ClaudeActivityObserving, @unchecked S
     private let queue = DispatchQueue(
         label: "com.kirillchistov.VibeMenu.claude-detect", qos: .utility
     )
+    private let refreshLock = NSLock()
     private let lock = NSLock()
     private var _state: ClaudeActivityState = .unknown
     private var _intent: ClaudeAutomationIntent = .release
@@ -153,7 +160,7 @@ public final class ClaudeActivityProvider: ClaudeActivityObserving, @unchecked S
             .appendingPathComponent("sessions", isDirectory: true)
     }
 
-    public init(
+    public convenience init(
         recencyThreshold: TimeInterval = ClaudeActivityState.defaultRecencyThreshold,
         heartbeatActiveThreshold: TimeInterval = ClaudeActivityState.defaultHeartbeatActiveThreshold,
         heartbeatStaleThreshold: TimeInterval = ClaudeActivityState.defaultHeartbeatStaleThreshold,
@@ -161,11 +168,41 @@ public final class ClaudeActivityProvider: ClaudeActivityObserving, @unchecked S
         heartbeatDirectory: URL? = nil,
         titleResolver: SessionTitleResolving? = TranscriptTitleResolver()
     ) {
+        self.init(
+            recencyThreshold: recencyThreshold,
+            heartbeatActiveThreshold: heartbeatActiveThreshold,
+            heartbeatStaleThreshold: heartbeatStaleThreshold,
+            quietHoldCap: quietHoldCap,
+            heartbeatDirectory: heartbeatDirectory,
+            titleResolver: titleResolver,
+            processChecker: { claudeProcessPresent() },
+            sessionActivityReader: { mostRecentSessionActivity(fileManager: .default) }
+        )
+    }
+
+    /// Injectable I/O seams for deterministic provider-tick tests. Internal so production callers
+    /// keep the small public initializer above and cannot replace the privacy-constrained adapters.
+    init(
+        recencyThreshold: TimeInterval = ClaudeActivityState.defaultRecencyThreshold,
+        heartbeatActiveThreshold: TimeInterval = ClaudeActivityState.defaultHeartbeatActiveThreshold,
+        heartbeatStaleThreshold: TimeInterval = ClaudeActivityState.defaultHeartbeatStaleThreshold,
+        quietHoldCap: TimeInterval = ClaudeActivityState.defaultQuietHoldCap,
+        heartbeatDirectory: URL? = nil,
+        titleResolver: SessionTitleResolving? = nil,
+        processChecker: @escaping @Sendable () -> Bool,
+        sessionActivityReader: @escaping @Sendable () -> Date?
+    ) {
         self.recencyThreshold = recencyThreshold
         self.heartbeatActiveThreshold = heartbeatActiveThreshold
         self.heartbeatStaleThreshold = heartbeatStaleThreshold
         self.quietHoldCap = quietHoldCap
         self.heartbeatDirectory = heartbeatDirectory ?? Self.defaultHeartbeatDirectory
+        self.heartbeatReader = ClaudeHeartbeatReader(
+            retentionHorizon: ClaudeSessionStore.defaultPruneHorizon,
+            maxFiles: Self.maxHeartbeatFiles
+        )
+        self.processChecker = processChecker
+        self.sessionActivityReader = sessionActivityReader
         self.titleResolver = titleResolver
         // The radar store shares the detection thresholds so per-session states line up with
         // the active window and quiet-hold cap the automation path uses.
@@ -205,7 +242,7 @@ public final class ClaudeActivityProvider: ClaudeActivityObserving, @unchecked S
             repeating: Self.refreshInterval,
             leeway: .milliseconds(Int(Self.refreshLeeway * 1000))
         )
-        timer.setEventHandler { [weak self] in self?.refresh() }
+        timer.setEventHandler { [weak self] in self?.refresh(now: Date()) }
         self.timer = timer
         timer.resume()
     }
@@ -225,10 +262,19 @@ public final class ClaudeActivityProvider: ClaudeActivityObserving, @unchecked S
 
     /// One refresh tick: read the hook heartbeat files + gather metadata-only signals,
     /// evaluate (L2), publish on change. Runs on the private utility queue.
-    private func refresh() {
-        let now = Date()
-        let heartbeats = Self.readHeartbeatRecords(in: heartbeatDirectory)
-        let signals = Self.gatherSignals()
+    func refresh(now: Date) {
+        refreshLock.lock()
+        defer { refreshLock.unlock() }
+
+        // L1 cannot hold without a visible process. Keep its cheap process-table check and the L2
+        // heartbeat metadata walk every two seconds, but avoid the expensive ~/.claude project walk
+        // entirely while the process is absent. A process appearance re-enables it on this same tick.
+        let processPresent = processChecker()
+        let heartbeats = heartbeatReader.readRecords(in: heartbeatDirectory, now: now)
+        let signals = ClaudeActivitySignals(
+            processPresent: processPresent,
+            mostRecentSessionActivity: processPresent ? sessionActivityReader() : nil
+        )
         let newState = ClaudeActivityState.evaluate(
             heartbeats: heartbeats,
             signals: signals,
@@ -338,6 +384,22 @@ public final class ClaudeActivityProvider: ClaudeActivityObserving, @unchecked S
         }
         #endif
     }
+
+    /// Count-only cache evidence for deterministic tests and temporary local measurement. Nothing is
+    /// logged in production, and no path, id, title, record, or timestamp is exposed.
+    var heartbeatCacheDiagnostics: ClaudeHeartbeatCacheDiagnostics {
+        heartbeatReader.cacheDiagnostics
+    }
+
+    var automationIntent: ClaudeAutomationIntent {
+        lock.lock(); defer { lock.unlock() }
+        return _intent
+    }
+
+    var sessions: [ClaudeSession] {
+        lock.lock(); defer { lock.unlock() }
+        return _sessions
+    }
 }
 
 // MARK: - Heartbeat reading (L2, VibeMenu-owned files only)
@@ -352,33 +414,177 @@ extension ClaudeActivityProvider {
         in directory: URL,
         fileManager: FileManager = .default
     ) -> [ClaudeHeartbeatRecord] {
-        guard let files = try? fileManager.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) else {
-            return []   // no directory yet (hook not installed) ⇒ no heartbeats ⇒ L1 path
-        }
-
-        var records: [ClaudeHeartbeatRecord] = []
-        for file in files where file.pathExtension == "json" {
-            guard let data = try? Data(contentsOf: file) else { continue }
-            if let record = ClaudeHeartbeatRecord.decode(from: data) {
-                records.append(record)
-            }
-        }
-        return records
+        ClaudeHeartbeatReader(
+            fileManager: fileManager, retentionHorizon: nil, maxFiles: .max
+        ).readRecords(in: directory, now: Date())
     }
 }
 
 // MARK: - Signal gathering (thin, metadata-only)
 
 extension ClaudeActivityProvider {
-    /// Gather the two L1 signals from the real system. Metadata only.
+    /// Gather the two L1 signals from the real system. Metadata only. The project/session mtime
+    /// walk is unnecessary when the process is absent because L1 cannot hold without that process.
     static func gatherSignals() -> ClaudeActivitySignals {
-        ClaudeActivitySignals(
-            processPresent: claudeProcessPresent(),
-            mostRecentSessionActivity: mostRecentSessionActivity(fileManager: .default)
+        let processPresent = claudeProcessPresent()
+        return ClaudeActivitySignals(
+            processPresent: processPresent,
+            mostRecentSessionActivity: processPresent
+                ? mostRecentSessionActivity(fileManager: .default)
+                : nil
+        )
+    }
+}
+
+// MARK: - Bounded heartbeat cache (L2, VibeMenu-owned allowlisted records only)
+
+private struct ClaudeHeartbeatCacheIdentity: Equatable, Sendable {
+    let modificationDate: Date
+    let attributeModificationDate: Date?
+    let size: Int
+    let resourceIdentifier: Data?
+}
+
+private struct ClaudeHeartbeatFileMetadata: Sendable {
+    let url: URL
+    let identity: ClaudeHeartbeatCacheIdentity
+}
+
+private struct CachedClaudeHeartbeat: Sendable {
+    let identity: ClaudeHeartbeatCacheIdentity
+    /// The existing allowlisted record, or nil for the current malformed/unreadable identity.
+    let record: ClaudeHeartbeatRecord?
+}
+
+struct ClaudeHeartbeatCacheDiagnostics: Equatable, Sendable {
+    let candidateFiles: Int
+    let cacheHits: Int
+    let filesDecoded: Int
+    let cachedFiles: Int
+
+    init(candidateFiles: Int = 0, cacheHits: Int = 0, filesDecoded: Int = 0, cachedFiles: Int = 0) {
+        self.candidateFiles = candidateFiles
+        self.cacheHits = cacheHits
+        self.filesDecoded = filesDecoded
+        self.cachedFiles = cachedFiles
+    }
+}
+
+/// Lock-serialized because the provider is `@unchecked Sendable` and direct deterministic tests may
+/// call ticks from outside its timer queue. Cache entries structurally cannot retain heartbeat bytes.
+private final class ClaudeHeartbeatReader: @unchecked Sendable {
+    private let fileManager: FileManager
+    private let retentionHorizon: TimeInterval?
+    private let maxFiles: Int
+    private let lock = NSLock()
+    private var cache: [URL: CachedClaudeHeartbeat] = [:]
+    private var _cacheDiagnostics = ClaudeHeartbeatCacheDiagnostics()
+
+    init(
+        fileManager: FileManager = .default,
+        retentionHorizon: TimeInterval?,
+        maxFiles: Int
+    ) {
+        self.fileManager = fileManager
+        self.retentionHorizon = retentionHorizon
+        self.maxFiles = maxFiles
+    }
+
+    func readRecords(in directory: URL, now: Date) -> [ClaudeHeartbeatRecord] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let files = recentFiles(in: directory, now: now)
+        let candidates = Set(files.map(\.url))
+        cache = cache.filter { candidates.contains($0.key) }
+
+        var hits = 0
+        var decoded = 0
+        var records: [ClaudeHeartbeatRecord] = []
+        for file in files {
+            let record: ClaudeHeartbeatRecord?
+            if let cached = cache[file.url], cached.identity == file.identity {
+                hits += 1
+                record = cached.record
+            } else {
+                decoded += 1
+                if let data = try? Data(contentsOf: file.url),
+                   data.count == file.identity.size,
+                   currentIdentity(of: file.url) == file.identity {
+                    record = ClaudeHeartbeatRecord.decode(from: data)
+                } else {
+                    record = nil
+                }
+                // Negative caching is deliberate: a changed malformed/unreadable file replaces the
+                // old record and cannot keep an obsolete hold alive.
+                cache[file.url] = CachedClaudeHeartbeat(identity: file.identity, record: record)
+            }
+            if let record { records.append(record) }
+        }
+
+        _cacheDiagnostics = ClaudeHeartbeatCacheDiagnostics(
+            candidateFiles: files.count,
+            cacheHits: hits,
+            filesDecoded: decoded,
+            cachedFiles: cache.count
+        )
+        return records
+    }
+
+    var cacheDiagnostics: ClaudeHeartbeatCacheDiagnostics {
+        lock.lock(); defer { lock.unlock() }
+        return _cacheDiagnostics
+    }
+
+    private func recentFiles(in directory: URL, now: Date) -> [ClaudeHeartbeatFileMetadata] {
+        let keys: Set<URLResourceKey> = [
+            .attributeModificationDateKey, .contentModificationDateKey, .fileSizeKey,
+            .fileResourceIdentifierKey, .isRegularFileKey,
+        ]
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        let cutoff = retentionHorizon.map { now.addingTimeInterval(-$0) }
+        var files: [ClaudeHeartbeatFileMetadata] = []
+        for url in urls where url.pathExtension == "json" {
+            guard let identity = identity(of: url, keys: keys),
+                  cutoff == nil || identity.modificationDate >= cutoff!
+            else { continue }
+            files.append(ClaudeHeartbeatFileMetadata(url: url, identity: identity))
+        }
+        files.sort { lhs, rhs in
+            if lhs.identity.modificationDate != rhs.identity.modificationDate {
+                return lhs.identity.modificationDate > rhs.identity.modificationDate
+            }
+            return lhs.url.lastPathComponent < rhs.url.lastPathComponent
+        }
+        return Array(files.prefix(maxFiles))
+    }
+
+    private func currentIdentity(of url: URL) -> ClaudeHeartbeatCacheIdentity? {
+        identity(of: url, keys: [
+            .attributeModificationDateKey, .contentModificationDateKey, .fileSizeKey,
+            .fileResourceIdentifierKey, .isRegularFileKey,
+        ])
+    }
+
+    private func identity(
+        of url: URL,
+        keys: Set<URLResourceKey>
+    ) -> ClaudeHeartbeatCacheIdentity? {
+        guard let values = try? url.resourceValues(forKeys: keys),
+              values.isRegularFile == true,
+              let modificationDate = values.contentModificationDate,
+              let size = values.fileSize, size >= 0
+        else { return nil }
+        return ClaudeHeartbeatCacheIdentity(
+            modificationDate: modificationDate,
+            attributeModificationDate: values.attributeModificationDate,
+            size: size,
+            resourceIdentifier: values.fileResourceIdentifier as? Data
         )
     }
 }

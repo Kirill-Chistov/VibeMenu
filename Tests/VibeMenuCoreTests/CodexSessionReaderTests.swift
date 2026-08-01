@@ -255,19 +255,25 @@ struct CodexSessionReaderCacheTests {
         let dir = CodexFixture.makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let now = Date()
+        let rollout = CodexFixture.rollout(
+            sessionID: "cached", start: now.addingTimeInterval(-10),
+            events: [(0, "task_started", [:])]
+        )
         CodexFixture.write(
-            CodexFixture.rollout(
-                sessionID: "cached", start: now.addingTimeInterval(-10),
-                events: [(0, "task_started", [:])]
-            ),
+            rollout,
             named: "rollout-cached.jsonl", into: dir, mtime: now
         )
         let subject = reader(dir)
 
         #expect(subject.readSessions(now: now).map(\.id) == ["cached"])
-        #expect(subject.cacheDiagnostics == CodexSessionCacheDiagnostics(
-            candidateFiles: 1, cacheHits: 0, filesReparsed: 1, cachedFiles: 1
-        ))
+        let cold = subject.cacheDiagnostics
+        #expect(cold.candidateFiles == 1)
+        #expect(cold.cacheHits == 0)
+        #expect(cold.filesReparsed == 1)
+        #expect(cold.filesIncrementallyParsed == 0)
+        #expect(cold.cachedFiles == 1)
+        #expect(cold.fullBytesParsed == rollout.utf8.count)
+        #expect(cold.appendedBytesParsed == 0)
 
         #expect(subject.readSessions(now: now).map(\.id) == ["cached"])
         #expect(subject.cacheDiagnostics == CodexSessionCacheDiagnostics(
@@ -316,15 +322,19 @@ struct CodexSessionReaderCacheTests {
         let subject = reader(dir, recencyHorizon: 300)
         #expect(subject.readSessions(now: now).first?.state == .idle)
 
-        append(CodexFixture.line(
+        let appendedLine = CodexFixture.line(
             timestamp: now, type: "event_msg", payload: ["type": "task_started"]
-        ) + "\n", to: url)
+        ) + "\n"
+        append(appendedLine, to: url)
 
         let updated = try! #require(subject.readSessions(now: now).first)
         #expect(updated.state == .active)
         #expect(abs(updated.lastActivity.timeIntervalSince(now)) < 0.01)
         #expect(subject.cacheDiagnostics.cacheHits == 0)
-        #expect(subject.cacheDiagnostics.filesReparsed == 1)
+        #expect(subject.cacheDiagnostics.filesReparsed == 0)
+        #expect(subject.cacheDiagnostics.filesIncrementallyParsed == 1)
+        #expect(subject.cacheDiagnostics.fullBytesParsed == 0)
+        #expect(subject.cacheDiagnostics.appendedBytesParsed == appendedLine.utf8.count)
     }
 
     @Test("Appending task_complete invalidates and releases that mode")
@@ -353,7 +363,44 @@ struct CodexSessionReaderCacheTests {
         #expect(completed.first?.state == .done)
         #expect(completed.first?.endedWithCompletion == true)
         #expect(CodexSessionActivity.automationIntent(completed, mode: .work) == .release)
-        #expect(subject.cacheDiagnostics.filesReparsed == 1)
+        #expect(subject.cacheDiagnostics.filesReparsed == 0)
+        #expect(subject.cacheDiagnostics.filesIncrementallyParsed == 1)
+        #expect(subject.cacheDiagnostics.fullBytesParsed == 0)
+        #expect(subject.cacheDiagnostics.appendedBytesParsed > 0)
+    }
+
+    @Test("A JSON line split across two appends is buffered until complete")
+    func splitLineAcrossReads() {
+        let dir = CodexFixture.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let now = Date()
+        let start = now.addingTimeInterval(-120)
+        let url = CodexFixture.write(
+            CodexFixture.rollout(
+                sessionID: "split-line", start: start,
+                events: [(0, "task_started", [:])]
+            ),
+            named: "rollout-split-line.jsonl", into: dir, mtime: now
+        )
+        let subject = reader(dir, recencyHorizon: 300)
+        #expect(subject.readSessions(now: now).first?.state == .idle)
+
+        let complete = Data((CodexFixture.line(
+            timestamp: now, type: "event_msg", payload: ["type": "task_started"]
+        ) + "\n").utf8)
+        let split = complete.count / 2
+        append(String(decoding: complete.prefix(split), as: UTF8.self), to: url)
+        #expect(subject.readSessions(now: now).first?.state == .idle)
+        #expect(subject.cacheDiagnostics.filesIncrementallyParsed == 1)
+        #expect(subject.cacheDiagnostics.appendedBytesParsed == split)
+
+        append(String(decoding: complete.suffix(from: split), as: UTF8.self), to: url)
+        let updated = try! #require(subject.readSessions(now: now).first)
+        #expect(updated.state == .active)
+        #expect(abs(updated.lastActivity.timeIntervalSince(now)) < 0.01)
+        #expect(subject.cacheDiagnostics.filesIncrementallyParsed == 1)
+        #expect(subject.cacheDiagnostics.filesReparsed == 0)
+        #expect(subject.cacheDiagnostics.appendedBytesParsed == complete.count - split)
     }
 
     @Test("Same-path replacement and truncation both invalidate")
@@ -391,6 +438,79 @@ struct CodexSessionReaderCacheTests {
         #expect(subject.cacheDiagnostics.cachedFiles == 1)   // negative result replaced stale active
     }
 
+    @Test("An in-place same-size rewrite forces a full reparse")
+    func sameSizeRewriteForcesFullParse() {
+        let dir = CodexFixture.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let now = Date()
+        let oldText = CodexFixture.rollout(
+            sessionID: "same-old", start: now, events: [(0, "task_started", [:])]
+        )
+        let newText = CodexFixture.rollout(
+            sessionID: "same-new", start: now, events: [(0, "task_started", [:])]
+        )
+        #expect(oldText.utf8.count == newText.utf8.count)
+        let url = CodexFixture.write(
+            oldText, named: "rollout-same-size.jsonl", into: dir, mtime: now
+        )
+        let subject = reader(dir)
+        #expect(subject.readSessions(now: now).map(\.id) == ["same-old"])
+
+        let handle = try! FileHandle(forWritingTo: url)
+        try! handle.truncate(atOffset: 0)
+        try! handle.write(contentsOf: Data(newText.utf8))
+        try! handle.close()
+        let rewritten = subject.readSessions(now: now)
+        #expect(rewritten.map(\.id) == ["same-new"])
+        #expect(subject.cacheDiagnostics.filesReparsed == 1)
+        #expect(subject.cacheDiagnostics.filesIncrementallyParsed == 0)
+    }
+
+    @Test("Changed-prefix validation failure falls back to a full parse")
+    func changedPrefixForcesFullParse() {
+        let dir = CodexFixture.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let now = Date()
+        let text = CodexFixture.rollout(
+            sessionID: "prefix-old", start: now,
+            events: [(0, "task_started", [:])]
+        )
+        let url = CodexFixture.write(
+            text, named: "rollout-prefix.jsonl", into: dir, mtime: now
+        )
+        let subject = reader(dir)
+        #expect(subject.readSessions(now: now).map(\.id) == ["prefix-old"])
+
+        let oldID = Data("prefix-old".utf8)
+        let newID = Data("prefix-new".utf8)
+        let original = Data(text.utf8)
+        var idRanges: [Range<Data.Index>] = []
+        var searchStart = original.startIndex
+        while searchStart < original.endIndex,
+              let range = original[searchStart...].range(of: oldID) {
+            idRanges.append(range)
+            searchStart = range.upperBound
+        }
+        #expect(idRanges.count == 2) // session_id + id in the sanitized meta fixture
+        let handle = try! FileHandle(forUpdating: url)
+        for range in idRanges {
+            try! handle.seek(toOffset: UInt64(range.lowerBound))
+            try! handle.write(contentsOf: newID)
+        }
+        _ = try! handle.seekToEnd()
+        try! handle.write(contentsOf: Data((CodexFixture.line(
+            timestamp: now.addingTimeInterval(1),
+            type: "event_msg", payload: ["type": "task_started"]
+        ) + "\n").utf8))
+        try! handle.close()
+
+        #expect(subject.readSessions(now: now.addingTimeInterval(1)).map(\.id) == ["prefix-new"])
+        #expect(subject.cacheDiagnostics.filesReparsed == 1)
+        #expect(subject.cacheDiagnostics.filesIncrementallyParsed == 0)
+        #expect(subject.cacheDiagnostics.fullBytesParsed > 0)
+        #expect(subject.cacheDiagnostics.appendedBytesParsed == 0)
+    }
+
     @Test("A malformed changed file cannot preserve an old active result")
     func changedMalformedFailsClosed() {
         let dir = CodexFixture.makeTempDir()
@@ -415,6 +535,53 @@ struct CodexSessionReaderCacheTests {
         #expect(subject.readSessions(now: now).isEmpty)
         #expect(subject.cacheDiagnostics.cacheHits == 1)
         #expect(subject.cacheDiagnostics.filesReparsed == 0)
+    }
+
+    @Test("A malformed complete append cannot preserve the old active summary")
+    func malformedAppendFailsClosed() {
+        let dir = CodexFixture.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let now = Date()
+        let url = CodexFixture.write(
+            CodexFixture.rollout(
+                sessionID: "malformed-append", start: now,
+                events: [(0, "task_started", [:])]
+            ),
+            named: "rollout-malformed-append.jsonl", into: dir, mtime: now
+        )
+        let subject = reader(dir)
+        #expect(subject.readSessions(now: now).first?.state == .active)
+
+        append("{malformed appended line}\n", to: url)
+        #expect(subject.readSessions(now: now).isEmpty)
+        #expect(subject.cacheDiagnostics.filesIncrementallyParsed == 1)
+        #expect(subject.cacheDiagnostics.filesReparsed == 0)
+        #expect(subject.cacheDiagnostics.cachedFiles == 1)
+
+        #expect(subject.readSessions(now: now).isEmpty)
+        #expect(subject.cacheDiagnostics.cacheHits == 1)
+    }
+
+    @Test("An unreadable changed rollout cannot preserve the old active summary")
+    func unreadableChangedFailsClosed() {
+        let dir = CodexFixture.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let now = Date()
+        let url = CodexFixture.write(
+            CodexFixture.rollout(
+                sessionID: "unreadable", start: now,
+                events: [(0, "task_started", [:])]
+            ),
+            named: "rollout-unreadable.jsonl", into: dir, mtime: now
+        )
+        let subject = reader(dir)
+        #expect(subject.readSessions(now: now).first?.state == .active)
+
+        try! FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: url.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        }
+        #expect(subject.readSessions(now: now).isEmpty)
     }
 
     @Test("Deleted and horizon-expired files are evicted")

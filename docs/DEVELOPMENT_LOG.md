@@ -4637,3 +4637,56 @@ measurement, on-screen menu/Settings rendering, and a live observed completion-t
 after this implementation turn ends. Recommended next step: after the owner repeats an idle-agent
 baseline, profile Claude monitoring separately; the sample shows it contributes to remaining work,
 but this patch deliberately leaves it untouched.
+
+## 2026-08-01 — Cache Claude heartbeats and incrementally parse active ChatGPT rollouts
+
+Reduced the two remaining measured polling hotspots without changing the two-second Claude cadence,
+the five-second ChatGPT session cadence, any activity/completion window, or power ownership. The
+always-on Claude provider now caches only VibeMenu's allowlisted heartbeat records by URL, content and
+attribute mtimes, size, and resource identity; changed malformed/unreadable files replace the prior
+record with a negative entry, while deletion, the existing 30-minute radar horizon, and a 400-file cap
+evict entries. Each tick still checks process presence and heartbeat metadata and re-derives state from
+the current clock. When no `claude` process exists it skips the `~/.claude` project/session mtime walk,
+which cannot make L1 hold in that state; process appearance restores the scan on the next existing tick.
+
+The ChatGPT session cache now retains the allowlisted parser accumulator, complete-line offset, bounded
+incomplete JSONL tail, and a SHA-256 digest of the last 4 KiB. Growth is incremental only when stable
+resource identity matches, metadata is monotonic, and that tail validates byte-for-byte; otherwise
+truncation, replacement, same-size rewrite, changed prefix, inconsistent metadata, or oversized growth
+uses the existing bounded full parse. Complete malformed suffixes and read failures fail closed. Tests
+cover split lines, activity/completion appends, every invalidation path, state aging, Work/Codex
+independence, and both cache bounds using sanitized fixtures only.
+
+**Release measurement (active Codex implementation turn; menu closed; no `claude` process).** One
+Release VibeMenu process at a time was sampled 61 times at one-second intervals; near-zero means CPU
+`<= 0.1%`. The metadata-only set was one 2,813,056-byte session candidate, 14 limits candidates /
+43,866,619 bytes, and zero heartbeat candidates inside the 30-minute cache horizon.
+
+- optional monitoring off: CPU 1.007% → **0.331%** average, 2.5% → **1.1%** peak; POWER 1.020 →
+  **0.341** average, 2.5 → **1.1** peak; near-zero **26/61 → 26/61**;
+- ChatGPT sessions only: CPU 2.036% → **0.441%** average, 9.5% → **1.7%** peak; POWER 2.056 →
+  **0.462** average, 9.6 → **1.7** peak; near-zero **22/61 → 26/61**;
+- sessions + limits: CPU 2.305% → **1.311%** average, 13.0% → **22.7%** peak; POWER 2.326 →
+  **1.320** average, 13.0 → **22.7** peak; near-zero **24/61 → 23/61**. The higher isolated peak
+  is consistent with the unchanged 30-second limits full read; average work still fell 43.1%.
+
+Count-only sanitized diagnostics recorded rollout cold/warm/append as `1 candidate, 0 hits, 1 full,
+315 full bytes` / `1, 1, 0, 0` / `1, 0, 0 full, 1 incremental, 94 appended bytes`; the heartbeat
+warm tick was `1 candidate, 1 hit, 0 decodes`, and both 400-entry bounds passed. Temporary diagnostic
+printing was removed. A 20-second stack sample showed remaining continuous work in Claude heartbeat
+metadata enumeration (43 samples), the safe ChatGPT title index (22), rollout discovery (22), and only
+four samples in incremental rollout parsing.
+
+**Validation.** `swift build` completed successfully; `scripts/test.sh` passed **695 tests in 99
+suites**; the requested Release `xcodebuild` reported **BUILD SUCCEEDED**; and `git diff --check` was
+clean after this log append. A focused changed-prefix test initially rewrote only one of the fixture's
+two duplicate id fields and was corrected to rewrite both. The first `open -na` used a relative app path
+and failed; the absolute built-app path launched successfully. Verified: cache reuse, invalidation,
+fail-closed behavior, clock aging, cadence constants, finish/fallback/quiet-cap precedence, heartbeat-only
+radar behavior, independent Claude/Codex/ChatGPT Work ownership, one shared assertion, Release launch,
+and the measurements above. Not verified: on-screen menu/Settings rendering or an owner-observed live
+completion-to-release transition after this turn ends. No network, telemetry, third-party/package dependency,
+private API, entitlement, preference key, data source, or power-assertion code changed; SHA-256 uses the public system
+CryptoKit framework and adds no package dependency. Recommended next step: owner
+smoke-test live completion/release; if further energy work is warranted, profile the 30-second limits
+burst and the still-uncached safe ChatGPT title index separately.

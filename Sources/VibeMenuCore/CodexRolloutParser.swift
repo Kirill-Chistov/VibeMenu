@@ -73,6 +73,46 @@ public struct CodexRolloutSummary: Equatable, Sendable {
     }
 }
 
+/// Safe, resumable parser state for one rollout. Every field is already part of the allowlisted
+/// summary (or is the minimum bookkeeping needed to derive it); no message, tool, reasoning, path,
+/// repository, or account content can be retained here.
+struct CodexRolloutParsingState: Equatable, Sendable {
+    var sessionID: String?
+    var originator: String?
+    var folderName: String?
+    var startedAt: Date?
+    var newestLine: Date?
+    /// `nil` until an `event_msg` category is seen; afterward records only whether the latest one
+    /// was `task_complete`, never the category string itself.
+    var lastEventWasCompletion: Bool?
+    var isSubagent = false
+    var scannedLines = 0
+
+    func summary(fallbackActivity: Date?) -> CodexRolloutSummary? {
+        guard let sessionID, let originator else { return nil }
+        let resolvedStart = startedAt ?? newestLine ?? fallbackActivity
+        let resolvedActivity = newestLine ?? fallbackActivity ?? resolvedStart
+        guard let resolvedStart, let resolvedActivity else { return nil }
+
+        return CodexRolloutSummary(
+            sessionID: sessionID,
+            originator: originator,
+            folderName: folderName,
+            startedAt: Swift.min(resolvedStart, resolvedActivity),
+            lastActivity: resolvedActivity,
+            endedWithCompletion: lastEventWasCompletion == true,
+            isSubagent: isSubagent
+        )
+    }
+}
+
+struct CodexRolloutChunkParse: Sendable {
+    let state: CodexRolloutParsingState
+    /// Bytes after the final newline. They may be a JSON object split across polling ticks and are
+    /// intentionally not decoded until a later append completes the line.
+    let incompleteTrailingBytes: Data
+}
+
 public enum CodexRolloutParser {
     /// The one `event_msg` category treated as a completion marker.
     public static let completionEventType = "task_complete"
@@ -113,13 +153,7 @@ public enum CodexRolloutParser {
     /// carries no parseable line timestamp at all — so a valid session with an odd body still gets
     /// an honest last-activity time rather than being dropped.
     public static func parse(text: String, fallbackActivity: Date? = nil) -> CodexRolloutSummary? {
-        var sessionID: String?
-        var originator: String?
-        var folderName: String?
-        var startedAt: Date?
-        var newestLine: Date?
-        var lastEventCategory: String?
-        var isSubagent = false
+        var state = CodexRolloutParsingState()
 
         // Two ISO8601 formatters built once per file (not per line): fractional-seconds first, then
         // plain. Kept local — `ISO8601DateFormatter` isn't `Sendable`, so a shared static would be a
@@ -141,61 +175,50 @@ public enum CodexRolloutParser {
             guard let data = rawLine.data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: data),
                   let line = object as? [String: Any] else { continue }
+            state.scannedLines = scanned
+            consume(line: line, into: &state, parseTimestamp: parseTimestamp)
+        }
+        return state.summary(fallbackActivity: fallbackActivity)
+    }
 
-            // Line timestamp (activity recency) — allowlisted.
-            if let ts = line["timestamp"] as? String, let date = parseTimestamp(ts) {
-                newestLine = Self.max(newestLine, date)
-            }
-
-            guard let type = line["type"] as? String,
-                  let payload = line["payload"] as? [String: Any] else { continue }
-
-            switch type {
-            case "session_meta":
-                // Only these four payload fields are ever read.
-                if sessionID == nil {
-                    sessionID = (payload["session_id"] as? String) ?? (payload["id"] as? String)
-                }
-                if originator == nil { originator = payload["originator"] as? String }
-                if folderName == nil, let cwd = payload["cwd"] as? String {
-                    folderName = Self.folderName(fromCwd: cwd)
-                }
-                // `source` distinguishes a real Desktop-launched session (a string like "vscode", or
-                // absent) from an internal subagent run (`{"subagent": {…}}`). Read ONLY whether it is
-                // a subagent — never its contents — so those internal rollouts can be dropped.
-                if let source = payload["source"] as? [String: Any], source["subagent"] != nil {
-                    isSubagent = true
-                }
-                if startedAt == nil, let ts = payload["timestamp"] as? String {
-                    startedAt = parseTimestamp(ts)
-                }
-            case "event_msg":
-                // Read ONLY the event's category label, never its content.
-                if let category = payload["type"] as? String {
-                    lastEventCategory = category
-                }
-            default:
-                break   // response_item / world_state / turn_context etc. — nothing safe to add
-            }
+    /// Strict incremental JSONL parsing used by `CodexSessionReader`. Only newline-terminated lines
+    /// are decoded; an incomplete tail is returned for the next polling tick. A malformed *complete*
+    /// line fails the chunk so changed content cannot inherit an obsolete active summary. The public
+    /// one-shot parser above remains lenient for compatibility with its existing pure-parser API.
+    static func parseIncrementalChunk(
+        _ data: Data,
+        startingWith initialState: CodexRolloutParsingState = CodexRolloutParsingState()
+    ) -> CodexRolloutChunkParse? {
+        var state = initialState
+        let isoFractional = ISO8601DateFormatter()
+        isoFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let isoPlain = ISO8601DateFormatter()
+        isoPlain.formatOptions = [.withInternetDateTime]
+        func parseTimestamp(_ string: String) -> Date? {
+            isoFractional.date(from: string) ?? isoPlain.date(from: string)
         }
 
-        // A usable Desktop rollout needs an id and an originator (so we can gate CLI vs Desktop).
-        guard let sessionID, let originator else { return nil }
+        var lineStart = data.startIndex
+        while let newline = data[lineStart...].firstIndex(of: 0x0A) {
+            var line = data[lineStart..<newline]
+            if line.last == 0x0D { line = line.dropLast() }
+            lineStart = data.index(after: newline)
 
-        // Resolve timestamps with honest fallbacks: a start time, then a last-activity time.
-        let resolvedStart = startedAt ?? newestLine ?? fallbackActivity
-        let resolvedActivity = newestLine ?? fallbackActivity ?? resolvedStart
-        guard let resolvedStart, let resolvedActivity else { return nil }
+            // Match the one-shot parser's empty-line tolerance. JSON whitespace-only separators are
+            // equally harmless and do not carry any metadata.
+            if line.allSatisfy({ $0 == 0x20 || $0 == 0x09 || $0 == 0x0D }) { continue }
+            state.scannedLines += 1
+            if state.scannedLines > 200_000 { continue }
 
-        return CodexRolloutSummary(
-            sessionID: sessionID,
-            originator: originator,
-            folderName: folderName,
-            // Guard against a start later than last activity (clock skew) so elapsed is sane.
-            startedAt: Swift.min(resolvedStart, resolvedActivity),
-            lastActivity: resolvedActivity,
-            endedWithCompletion: lastEventCategory == completionEventType,
-            isSubagent: isSubagent
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line)),
+                  let envelope = object as? [String: Any]
+            else { return nil }
+            consume(line: envelope, into: &state, parseTimestamp: parseTimestamp)
+        }
+
+        return CodexRolloutChunkParse(
+            state: state,
+            incompleteTrailingBytes: Data(data[lineStart...])
         )
     }
 
@@ -212,5 +235,45 @@ public enum CodexRolloutParser {
     private static func max(_ lhs: Date?, _ rhs: Date) -> Date {
         guard let lhs else { return rhs }
         return Swift.max(lhs, rhs)
+    }
+
+    private static func consume(
+        line: [String: Any],
+        into state: inout CodexRolloutParsingState,
+        parseTimestamp: (String) -> Date?
+    ) {
+        // Line timestamp (activity recency) — allowlisted.
+        if let ts = line["timestamp"] as? String, let date = parseTimestamp(ts) {
+            state.newestLine = Self.max(state.newestLine, date)
+        }
+
+        guard let type = line["type"] as? String,
+              let payload = line["payload"] as? [String: Any] else { return }
+
+        switch type {
+        case "session_meta":
+            // Only these four payload fields are ever read.
+            if state.sessionID == nil {
+                state.sessionID = (payload["session_id"] as? String) ?? (payload["id"] as? String)
+            }
+            if state.originator == nil { state.originator = payload["originator"] as? String }
+            if state.folderName == nil, let cwd = payload["cwd"] as? String {
+                state.folderName = Self.folderName(fromCwd: cwd)
+            }
+            // Read ONLY whether `source` is a subagent object — never its contents.
+            if let source = payload["source"] as? [String: Any], source["subagent"] != nil {
+                state.isSubagent = true
+            }
+            if state.startedAt == nil, let ts = payload["timestamp"] as? String {
+                state.startedAt = parseTimestamp(ts)
+            }
+        case "event_msg":
+            // Retain one bit only: whether the newest event category is the completion marker.
+            if let category = payload["type"] as? String {
+                state.lastEventWasCompletion = category == completionEventType
+            }
+        default:
+            break   // response_item / world_state / turn_context etc. — nothing safe to add
+        }
     }
 }

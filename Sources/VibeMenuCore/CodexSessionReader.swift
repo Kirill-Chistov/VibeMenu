@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 // Read-only adapter that turns Codex Desktop rollout files into the shared session list
 // (docs/decisions/0017-codex-session-support.md). All the risky *decisions* (what's allowlisted,
@@ -56,6 +57,10 @@ public final class CodexSessionReader: CodexSessionReading, @unchecked Sendable 
     /// read so `session_meta` (head) and the completion marker + newest timestamp (tail) survive.
     public static let defaultMaxFileBytes = 4 * 1024 * 1024
     public static let defaultHeadTailBytes = 64 * 1024
+    /// A growth-only update must reproduce this many bytes immediately before the previous EOF
+    /// before it is trusted as an append. Small enough for one cheap read, large enough to make a
+    /// same-path prefix rewrite fail validation without rereading the rollout.
+    static let appendValidationBytes = 4 * 1024
 
     private let directory: URL
     private let recencyHorizon: TimeInterval
@@ -124,27 +129,31 @@ public final class CodexSessionReader: CodexSessionReading, @unchecked Sendable 
         var byID: [String: CodexSession] = [:]
         var cacheHits = 0
         var filesReparsed = 0
+        var filesIncrementallyParsed = 0
+        var fullBytesParsed = 0
+        var appendedBytesParsed = 0
         for file in files {
             let summary: CodexRolloutSummary?
             if let cached = summaryCache[file.url], cached.identity == file.cacheIdentity {
                 cacheHits += 1
                 summary = cached.summary
             } else {
-                filesReparsed += 1
-                if let data = readCapped(file) {
-                    let text = String(decoding: data, as: UTF8.self)   // bad bytes → U+FFFD
-                    summary = CodexRolloutParser.parse(
-                        text: text, fallbackActivity: file.modificationDate
-                    )
+                let parsed: CachedRollout
+                if let cached = summaryCache[file.url],
+                   let incremental = incrementallyParse(file, after: cached) {
+                    filesIncrementallyParsed += 1
+                    appendedBytesParsed += incremental.appendedBytesParsed
+                    parsed = incremental.entry
                 } else {
-                    summary = nil
+                    filesReparsed += 1
+                    let full = fullyParse(file)
+                    fullBytesParsed += full.bytesParsed
+                    parsed = full.entry
                 }
-                // Cache the changed file's current result even when reading/parsing failed. Replacing
-                // an obsolete summary with nil is what makes a changed file fail closed instead of
-                // retaining an earlier active session.
-                summaryCache[file.url] = CachedRollout(
-                    identity: file.cacheIdentity, summary: summary
-                )
+                // Cache changed content even when reading/parsing failed. A negative entry replaces
+                // the old summary, so a changed file can never retain obsolete active state.
+                summaryCache[file.url] = parsed
+                summary = parsed.summary
             }
 
             guard let summary,
@@ -187,7 +196,10 @@ public final class CodexSessionReader: CodexSessionReading, @unchecked Sendable 
             candidateFiles: files.count,
             cacheHits: cacheHits,
             filesReparsed: filesReparsed,
-            cachedFiles: summaryCache.count
+            filesIncrementallyParsed: filesIncrementallyParsed,
+            cachedFiles: summaryCache.count,
+            fullBytesParsed: fullBytesParsed,
+            appendedBytesParsed: appendedBytesParsed
         )
 
         let sorted = byID.values.sorted(by: Self.mostActiveFirst)
@@ -275,6 +287,153 @@ public final class CodexSessionReader: CodexSessionReading, @unchecked Sendable 
         combined.append(tail)
         return combined
     }
+
+    // MARK: - Incremental parsing
+
+    /// Parse a changed rollout from the beginning. Files under the existing byte cap retain a safe
+    /// resumable parser state and a small validation tail; oversized files keep the existing bounded
+    /// head+tail behavior and are conservatively fully reparsed on later changes.
+    private func fullyParse(_ file: CodexRolloutFileMetadata) -> (entry: CachedRollout, bytesParsed: Int) {
+        guard let data = readCapped(file) else {
+            return (.failed(identity: file.cacheIdentity), 0)
+        }
+
+        if file.size <= maxFileBytes {
+            // A short read or a metadata change during the read is not a trustworthy snapshot.
+            guard data.count == file.size,
+                  currentIdentity(of: file.url) == file.cacheIdentity,
+                  let chunk = CodexRolloutParser.parseIncrementalChunk(data),
+                  chunk.incompleteTrailingBytes.count <= maxFileBytes
+            else { return (.failed(identity: file.cacheIdentity), data.count) }
+
+            let validationSize = min(data.count, Self.appendValidationBytes)
+            let validationDigest = Self.validationDigest(for: data.suffix(validationSize))
+            let summary = chunk.state.summary(fallbackActivity: file.modificationDate)
+            return (CachedRollout(
+                identity: file.cacheIdentity,
+                summary: summary,
+                parserState: chunk.state,
+                consumedOffset: file.size - chunk.incompleteTrailingBytes.count,
+                incompleteTrailingBytes: chunk.incompleteTrailingBytes,
+                validationSize: validationSize,
+                validationDigest: validationDigest
+            ), data.count)
+        }
+
+        let text = String(decoding: data, as: UTF8.self)   // bad bytes → U+FFFD
+        let summary = CodexRolloutParser.parse(text: text, fallbackActivity: file.modificationDate)
+        return (CachedRollout(
+            identity: file.cacheIdentity,
+            summary: summary,
+            parserState: nil,
+            consumedOffset: 0,
+            incompleteTrailingBytes: Data(),
+            validationSize: 0,
+            validationDigest: Data()
+        ), data.count)
+    }
+
+    /// If `file` is provably the same file with an unchanged prefix and a bounded append, parse only
+    /// the new suffix. Any uncertainty returns `nil`, causing a full reparse instead.
+    private func incrementallyParse(
+        _ file: CodexRolloutFileMetadata,
+        after cached: CachedRollout
+    ) -> (entry: CachedRollout, appendedBytesParsed: Int)? {
+        guard let parserState = cached.parserState,
+              file.size > cached.identity.size,
+              file.size - cached.identity.size <= maxFileBytes,
+              let oldResourceID = cached.identity.resourceIdentifier,
+              let newResourceID = file.resourceIdentifier,
+              oldResourceID == newResourceID,
+              file.modificationDate >= cached.identity.modificationDate,
+              metadataDidNotMoveBackward(
+                old: cached.identity.attributeModificationDate,
+                new: file.attributeModificationDate
+              ),
+              cached.consumedOffset == cached.identity.size - cached.incompleteTrailingBytes.count,
+              cached.validationSize > 0,
+              !cached.validationDigest.isEmpty
+        else { return nil }
+
+        let suffixCount = file.size - cached.identity.size
+        guard let handle = try? FileHandle(forReadingFrom: file.url) else { return nil }
+        defer { try? handle.close() }
+
+        do {
+            let validationOffset = cached.identity.size - cached.validationSize
+            try handle.seek(toOffset: UInt64(validationOffset))
+            guard let currentTail = try handle.read(upToCount: cached.validationSize),
+                  currentTail.count == cached.validationSize,
+                  Self.validationDigest(for: currentTail) == cached.validationDigest
+            else { return nil }
+
+            try handle.seek(toOffset: UInt64(cached.identity.size))
+            guard let suffix = try handle.read(upToCount: suffixCount), suffix.count == suffixCount,
+                  currentIdentity(of: file.url) == file.cacheIdentity
+            else { return nil }
+
+            var parseBytes = cached.incompleteTrailingBytes
+            parseBytes.append(suffix)
+            guard parseBytes.count <= maxFileBytes else {
+                return (.failed(identity: file.cacheIdentity), suffix.count)
+            }
+            guard let chunk = CodexRolloutParser.parseIncrementalChunk(
+                parseBytes, startingWith: parserState
+            ), chunk.incompleteTrailingBytes.count <= maxFileBytes else {
+                // A complete malformed appended line fails closed for the new identity. Returning a
+                // negative entry (rather than falling back to the old summary) is essential here.
+                return (
+                    .failed(identity: file.cacheIdentity),
+                    suffix.count
+                )
+            }
+
+            let nextValidationSize = min(file.size, Self.appendValidationBytes)
+            try handle.seek(toOffset: UInt64(file.size - nextValidationSize))
+            guard let nextTail = try handle.read(upToCount: nextValidationSize),
+                  nextTail.count == nextValidationSize,
+                  currentIdentity(of: file.url) == file.cacheIdentity
+            else { return nil }
+            return (CachedRollout(
+                identity: file.cacheIdentity,
+                summary: chunk.state.summary(fallbackActivity: file.modificationDate),
+                parserState: chunk.state,
+                consumedOffset: file.size - chunk.incompleteTrailingBytes.count,
+                incompleteTrailingBytes: chunk.incompleteTrailingBytes,
+                validationSize: nextValidationSize,
+                validationDigest: Self.validationDigest(for: nextTail)
+            ), suffix.count)
+        } catch {
+            return nil
+        }
+    }
+
+    private func currentIdentity(of url: URL) -> CodexRolloutCacheIdentity? {
+        let keys: Set<URLResourceKey> = [
+            .attributeModificationDateKey, .contentModificationDateKey, .fileSizeKey,
+            .fileResourceIdentifierKey, .isRegularFileKey,
+        ]
+        guard let values = try? url.resourceValues(forKeys: keys),
+              values.isRegularFile == true,
+              let modificationDate = values.contentModificationDate,
+              let size = values.fileSize, size >= 0
+        else { return nil }
+        return CodexRolloutCacheIdentity(
+            modificationDate: modificationDate,
+            attributeModificationDate: values.attributeModificationDate,
+            size: size,
+            resourceIdentifier: values.fileResourceIdentifier as? Data
+        )
+    }
+
+    private func metadataDidNotMoveBackward(old: Date?, new: Date?) -> Bool {
+        guard let old, let new else { return old == nil && new == nil }
+        return new >= old
+    }
+
+    private static func validationDigest<T: DataProtocol>(for bytes: T) -> Data {
+        Data(SHA256.hash(data: Data(bytes)))
+    }
 }
 
 /// Safe metadata collected during the existing stat-only candidate walk. Shared with the limits
@@ -307,23 +466,52 @@ private struct CachedRollout: Sendable {
     let identity: CodexRolloutCacheIdentity
     /// The allowlisted parsed summary, or nil for the current unreadable/malformed identity.
     let summary: CodexRolloutSummary?
+    let parserState: CodexRolloutParsingState?
+    /// Byte offset through the last complete JSONL line. The remaining bytes are held separately.
+    let consumedOffset: Int
+    let incompleteTrailingBytes: Data
+    /// Length + SHA-256 of a small EOF window. Raw complete-line bytes are not retained; the digest
+    /// exists solely to prove that a would-be append preserved the old prefix.
+    let validationSize: Int
+    let validationDigest: Data
+
+    static func failed(identity: CodexRolloutCacheIdentity) -> CachedRollout {
+        CachedRollout(
+            identity: identity,
+            summary: nil,
+            parserState: nil,
+            consumedOffset: 0,
+            incompleteTrailingBytes: Data(),
+            validationSize: 0,
+            validationDigest: Data()
+        )
+    }
 }
 
 struct CodexSessionCacheDiagnostics: Equatable, Sendable {
     let candidateFiles: Int
     let cacheHits: Int
     let filesReparsed: Int
+    let filesIncrementallyParsed: Int
     let cachedFiles: Int
+    let fullBytesParsed: Int
+    let appendedBytesParsed: Int
 
     init(
         candidateFiles: Int = 0,
         cacheHits: Int = 0,
         filesReparsed: Int = 0,
-        cachedFiles: Int = 0
+        filesIncrementallyParsed: Int = 0,
+        cachedFiles: Int = 0,
+        fullBytesParsed: Int = 0,
+        appendedBytesParsed: Int = 0
     ) {
         self.candidateFiles = candidateFiles
         self.cacheHits = cacheHits
         self.filesReparsed = filesReparsed
+        self.filesIncrementallyParsed = filesIncrementallyParsed
         self.cachedFiles = cachedFiles
+        self.fullBytesParsed = fullBytesParsed
+        self.appendedBytesParsed = appendedBytesParsed
     }
 }

@@ -694,6 +694,271 @@ struct ClaudeHeartbeatDecodeTests {
     }
 }
 
+// MARK: - Provider heartbeat cache + no-process fast path
+
+@Suite("ClaudeActivityProvider — cached heartbeat ticks", .serialized)
+struct ClaudeActivityProviderCacheTests {
+    private final class LockedBox<Value>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Value
+
+        init(_ value: Value) { self.value = value }
+
+        func get() -> Value {
+            lock.lock(); defer { lock.unlock() }
+            return value
+        }
+
+        func set(_ next: Value) {
+            lock.lock(); defer { lock.unlock() }
+            value = next
+        }
+    }
+
+    private let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private func makeDirectory() -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vibemenu-heartbeat-cache-\(UUID().uuidString)", isDirectory: true)
+        try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    @discardableResult
+    private func write(
+        _ event: String,
+        session: String = "synthetic-session",
+        updatedAt: Date,
+        to directory: URL,
+        named name: String = "synthetic-session.json",
+        atomically: Bool = false
+    ) -> URL {
+        let url = directory.appendingPathComponent(name)
+        let json = """
+        {"schemaVersion":2,"updatedAt":\(updatedAt.timeIntervalSince1970),\
+        "event":"\(event)","sessionID":"\(session)","project":"Fixture"}
+        """
+        try! Data(json.utf8).write(to: url, options: atomically ? .atomic : [])
+        try! FileManager.default.setAttributes([.modificationDate: updatedAt], ofItemAtPath: url.path)
+        return url
+    }
+
+    private func provider(
+        directory: URL,
+        process: LockedBox<Bool>,
+        scanCount: LockedBox<Int>,
+        activity: @escaping @Sendable () -> Date? = { nil }
+    ) -> ClaudeActivityProvider {
+        ClaudeActivityProvider(
+            heartbeatDirectory: directory,
+            titleResolver: nil,
+            processChecker: { process.get() },
+            sessionActivityReader: {
+                scanCount.set(scanCount.get() + 1)
+                return activity()
+            }
+        )
+    }
+
+    @Test("Unchanged heartbeat files decode once while state is re-derived")
+    func unchangedDecodesOnce() {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        write("PreToolUse", updatedAt: now, to: directory)
+        let process = LockedBox(true)
+        let scans = LockedBox(0)
+        let subject = provider(directory: directory, process: process, scanCount: scans)
+
+        subject.refresh(now: now)
+        #expect(subject.heartbeatCacheDiagnostics == ClaudeHeartbeatCacheDiagnostics(
+            candidateFiles: 1, cacheHits: 0, filesDecoded: 1, cachedFiles: 1
+        ))
+        #expect(subject.automationIntent == .hold)
+
+        subject.refresh(now: now.addingTimeInterval(2))
+        #expect(subject.heartbeatCacheDiagnostics == ClaudeHeartbeatCacheDiagnostics(
+            candidateFiles: 1, cacheHits: 1, filesDecoded: 0, cachedFiles: 1
+        ))
+        #expect(subject.automationIntent == .hold)
+    }
+
+    @Test("In-place modification and atomic replacement both invalidate")
+    func modificationAndReplacementInvalidate() {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        write("Stop", updatedAt: now, to: directory)
+        let process = LockedBox(true)
+        let subject = provider(directory: directory, process: process, scanCount: LockedBox(0))
+        subject.refresh(now: now)
+        #expect(subject.automationIntent == .release)
+
+        write("PreToolUse", updatedAt: now.addingTimeInterval(1), to: directory)
+        subject.refresh(now: now.addingTimeInterval(1))
+        #expect(subject.heartbeatCacheDiagnostics.filesDecoded == 1)
+        #expect(subject.automationIntent == .hold)
+
+        write(
+            "Stop", updatedAt: now.addingTimeInterval(2), to: directory, atomically: true
+        )
+        subject.refresh(now: now.addingTimeInterval(2))
+        #expect(subject.heartbeatCacheDiagnostics.filesDecoded == 1)
+        #expect(subject.automationIntent == .release)
+    }
+
+    @Test("A malformed changed heartbeat cannot preserve an active hold")
+    func malformedChangedFailsClosed() {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = write("PreToolUse", updatedAt: now, to: directory)
+        let process = LockedBox(true)
+        let subject = provider(directory: directory, process: process, scanCount: LockedBox(0))
+        subject.refresh(now: now)
+        #expect(subject.automationIntent == .hold)
+
+        try! Data("{malformed changed heartbeat".utf8).write(to: url)
+        try! FileManager.default.setAttributes(
+            [.modificationDate: now.addingTimeInterval(1)], ofItemAtPath: url.path
+        )
+        subject.refresh(now: now.addingTimeInterval(1))
+        #expect(subject.heartbeatCacheDiagnostics.filesDecoded == 1)
+        #expect(subject.automationIntent == .release)
+        #expect(subject.sessions.isEmpty)
+
+        subject.refresh(now: now.addingTimeInterval(2))
+        #expect(subject.heartbeatCacheDiagnostics.cacheHits == 1) // negative entry is reused
+        #expect(subject.heartbeatCacheDiagnostics.filesDecoded == 0)
+        #expect(subject.automationIntent == .release)
+    }
+
+    @Test("Deletion and the existing radar horizon evict cached records")
+    func deletionAndExpiryEvict() {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let deleted = write("Stop", session: "deleted", updatedAt: now, to: directory, named: "deleted.json")
+        write("Stop", session: "expired", updatedAt: now, to: directory, named: "expired.json")
+        let subject = provider(
+            directory: directory, process: LockedBox(false), scanCount: LockedBox(0)
+        )
+        subject.refresh(now: now)
+        #expect(subject.heartbeatCacheDiagnostics.cachedFiles == 2)
+
+        try! FileManager.default.removeItem(at: deleted)
+        subject.refresh(now: now.addingTimeInterval(1))
+        #expect(subject.heartbeatCacheDiagnostics.candidateFiles == 1)
+        #expect(subject.heartbeatCacheDiagnostics.cachedFiles == 1)
+
+        subject.refresh(now: now.addingTimeInterval(ClaudeSessionStore.defaultPruneHorizon + 1))
+        #expect(subject.heartbeatCacheDiagnostics.candidateFiles == 0)
+        #expect(subject.heartbeatCacheDiagnostics.cachedFiles == 0)
+        #expect(subject.sessions.isEmpty)
+    }
+
+    @Test("The heartbeat cache is bounded by the provider candidate cap")
+    func cacheIsBounded() {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for index in 0...ClaudeActivityProvider.maxHeartbeatFiles {
+            write(
+                "Stop", session: "bounded-\(index)",
+                updatedAt: now.addingTimeInterval(-Double(index) / 1_000),
+                to: directory, named: "bounded-\(index).json"
+            )
+        }
+        let subject = provider(
+            directory: directory, process: LockedBox(false), scanCount: LockedBox(0)
+        )
+        subject.refresh(now: now)
+        #expect(subject.heartbeatCacheDiagnostics.candidateFiles == ClaudeActivityProvider.maxHeartbeatFiles)
+        #expect(subject.heartbeatCacheDiagnostics.filesDecoded == ClaudeActivityProvider.maxHeartbeatFiles)
+        #expect(subject.heartbeatCacheDiagnostics.cachedFiles == ClaudeActivityProvider.maxHeartbeatFiles)
+    }
+
+    @Test("Cached heartbeat state and quiet hold age from the injected clock")
+    func cachedStateAges() {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        write("PreToolUse", updatedAt: now, to: directory)
+        let subject = provider(
+            directory: directory, process: LockedBox(true), scanCount: LockedBox(0)
+        )
+
+        subject.refresh(now: now)
+        #expect(subject.state == .active)
+        #expect(subject.sessions.first?.state == .working)
+        #expect(subject.automationIntent == .hold)
+
+        subject.refresh(now: now.addingTimeInterval(121))
+        #expect(subject.heartbeatCacheDiagnostics.filesDecoded == 0)
+        #expect(subject.state == .waiting)
+        #expect(subject.sessions.first?.state == .quietWorking)
+        #expect(subject.automationIntent == .hold)
+
+        subject.refresh(now: now.addingTimeInterval(901))
+        #expect(subject.heartbeatCacheDiagnostics.filesDecoded == 0)
+        #expect(subject.sessions.first?.state == .stale)
+        #expect(subject.automationIntent == .release)
+    }
+
+    @Test("No process skips the project scan; appearance resumes it on the next tick")
+    func noProcessFastPathAndAppearance() {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        write("PreToolUse", updatedAt: now, to: directory)
+        let process = LockedBox(false)
+        let scans = LockedBox(0)
+        let subject = provider(
+            directory: directory,
+            process: process,
+            scanCount: scans,
+            activity: { self.now }
+        )
+
+        subject.refresh(now: now)
+        #expect(scans.get() == 0)
+        #expect(subject.sessions.count == 1) // recent heartbeat-backed row is retained
+        #expect(subject.automationIntent == .release)
+
+        process.set(true)
+        subject.refresh(now: now.addingTimeInterval(2))
+        #expect(scans.get() == 1)
+        #expect(subject.state == .active)
+        #expect(subject.automationIntent == .hold)
+        #expect(ClaudeActivityProvider.refreshInterval == 2)
+    }
+
+    @Test("Finish authority, stale fallback, quiet cap, and heartbeat-only radar stay intact")
+    func precedenceFallbackCapAndRadar() {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        write("Stop", updatedAt: now, to: directory)
+        let freshActivity = LockedBox<Date?>(now)
+        let subject = provider(
+            directory: directory,
+            process: LockedBox(true),
+            scanCount: LockedBox(0),
+            activity: { freshActivity.get() }
+        )
+
+        subject.refresh(now: now)
+        #expect(subject.automationIntent == .release) // recent finish suppresses fresh L1
+        #expect(subject.sessions.first?.state == .done)
+
+        let fallbackNow = now.addingTimeInterval(
+            ClaudeActivityState.defaultHeartbeatStaleThreshold + 1
+        )
+        freshActivity.set(fallbackNow)
+        subject.refresh(now: fallbackNow)
+        #expect(subject.automationIntent == .hold) // stale finish no longer suppresses L1
+
+        try! FileManager.default.removeItem(
+            at: directory.appendingPathComponent("synthetic-session.json")
+        )
+        subject.refresh(now: fallbackNow.addingTimeInterval(1))
+        #expect(subject.sessions.isEmpty) // L1 never fabricates a radar row
+        #expect(subject.automationIntent == .hold)
+    }
+}
+
 // MARK: - L2 diagnostics (privacy-safe)
 
 @Suite("ClaudeActivityDiagnostics (heartbeat)")
