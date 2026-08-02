@@ -9,7 +9,7 @@
 
   LSUIElement = true makes VibeMenu a menu-bar-only "agent" app: it shows a
   MenuBarExtra status item and has NO Dock icon and no app-switcher entry — the
-  intended shape for v0.1 (ROADMAP.md, ARCHITECTURE.md "Stack").
+  intended shape for VibeMenu (README.md, ARCHITECTURE.md "Stack").
 -->
 <plist version="1.0">
 <dict>
@@ -28,9 +28,9 @@
 	<key>CFBundlePackageType</key>
 	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.3</string>
+	<string>1.0</string>
 	<key>CFBundleVersion</key>
-	<string>4</string>
+	<string>5</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>LSUIElement</key>

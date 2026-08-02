@@ -11,7 +11,7 @@ for design decisions.
 ## Product summary
 
 VibeMenu is a lightweight, local-only macOS 15+ Apple Silicon menu-bar app. It keeps the
-Mac awake while Claude Code or an active Codex Desktop session is working, releases the
+Mac awake while Claude Code or an active ChatGPT Work or Codex session is working, releases the
 power assertion when work finishes, and — **for Claude only** — uses a bounded quiet-work hold
 (15 minutes by default) to cover silent builds, tools, or subagents. Codex has no heartbeat, so
 it holds only while it looks active (~60s window) and gets no quiet-hold. It also provides a compact Session
@@ -196,9 +196,10 @@ when the agent can determine routine steps safely from the repo.
   Manual/Claude/Codex/ChatGPT Work ownership below the Sleep prevention switch. The switch remains usable during
   automation and changes only manual ownership; builds/tests passed and the owner verified the UI.
 - **Public-source state:** the repository is public, and the latest published binary release is
-  **v0.3**, cut directly from this repo via `scripts/package-github-release.sh`. Each tag corresponds
-  to its attached binary; `master` may later move ahead of the latest tag. Trust current code, the
-  latest ADRs, and the tail of `DEVELOPMENT_LOG.md` over older release-facing prose.
+  **v1.0**, cut directly from this repo via `scripts/package-github-release.sh`. The previous
+  **v0.3** release remains unchanged. Each tag corresponds to its attached binary; `master` may
+  later move ahead of the latest tag. Trust current code, the latest ADRs, and the tail of
+  `DEVELOPMENT_LOG.md` over older release-facing prose.
 - **Attention v1 and centralized Recent sessions are committed current behavior.** The hook latches
   genuine `Stop`/`StopFailure` completion against trailing subagent events; notifications cover
   Claude **Needs approval** and **Done**; the menu-bar icon turns orange for raw Claude approval
@@ -234,10 +235,11 @@ when the agent can determine routine steps safely from the repo.
   0004 amended again.
 - A release requires human sign-off, a clean/intended source commit, matching bundle/package
   version, passing build/tests, the manual smoke checklist, and a privacy/secrets scan.
-- **Release state (v0.3):** this source repository is public and the latest published binary release
-  is **v0.3**, packaged unsigned/not-notarized from this repo. Tagged releases correspond to their
-  attached binaries; `master` may later move ahead of the latest tag. The separate wrapper repo
-  remains out of scope and must not be edited without an explicit task.
+- **Release state (v1.0):** this source repository is public and the latest published binary release
+  is **v1.0**, packaged unsigned/not-notarized from this repo. The previous **v0.3** tag and release
+  remain unchanged. Tagged releases correspond to their attached binaries; `master` may later move
+  ahead of the latest tag. The separate wrapper repo remains out of scope and must not be edited
+  without an explicit task.
 
 ## Known product direction
 
@@ -248,9 +250,9 @@ small, native, local-first, cross-agent where evidence supports it, and free of 
 message content (the one ADR-approved exception is the Claude session title record — see
 `AGENTS.md` §6).
 
-**Current posture: v0.3 shipped; active feature development paused.** Attention v1 and centralized
+**Current posture: v1.0 shipped and feature-complete; active feature development paused.** Attention v1 and centralized
 Recent sessions are complete and committed, and the focused standalone power-and-attention release has
-shipped as **v0.3**. VibeMenu will not compete as a broad agent dashboard; agent tracking remains the
+shipped as **v1.0**. VibeMenu will not compete as a broad agent dashboard; agent tracking remains the
 bounded sensing layer for power protection, release, completion, and attention. The project is now in
 maintenance/feedback mode: bug fixes and any future work depend on actual user demand. Safe headless
 lid-closed operation was investigated but is **not built and not shipped** — it is out of scope for
@@ -267,7 +269,7 @@ and none is scheduled.
 `PRODUCT.md`, `ROADMAP.md`, `FAQ.md`, `INSTALL.md`, `PRIVACY.md`, `SECURITY.md`,
 `ARCHITECTURE.md`, and `RELEASE_CHECKLIST.md` were synchronized on 2026-07-19 with committed
 Attention v1, centralized Recent sessions, the orange attention icon, and the power-guardian
-direction, and again for the **v0.3** release (2026-07-24) to the shipped-and-paused posture. ADR 0020
+direction, and again for the **v1.0** release (2026-08-02) to the shipped-and-paused posture. ADR 0020
 records the bounded attention behavior; ADR 0021 records the product direction.
 
 Sequence to date:

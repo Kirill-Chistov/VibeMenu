@@ -4690,3 +4690,24 @@ private API, entitlement, preference key, data source, or power-assertion code c
 CryptoKit framework and adds no package dependency. Recommended next step: owner
 smoke-test live completion/release; if further energy work is warranted, profile the 30-second limits
 burst and the still-uncached safe ChatGPT title index separately.
+
+## 2026-08-02 — Prepare v1.0 release
+
+Reviewed and prepared the feature-complete v1.0 release documentation and bundle identity. Updated
+the README to describe Claude Code, ChatGPT Work, and Codex accurately; documented independent
+Manual → Claude → Codex → ChatGPT Work ownership, opt-in local limits, low-overhead monitoring,
+privacy boundaries, unsigned installation, limitations, and maintenance mode. Bumped the app to
+marketing version `1.0`, build `5`, and refreshed the current release-state handoff without changing
+historical v0.3 entries. No source behavior, preference key, data source, network, telemetry, or
+privacy boundary changed.
+
+**Validation.** `swift build` completed; `scripts/test.sh` passed **695 tests in 99 suites**;
+Debug and Release `xcodebuild` builds with `-derivedDataPath ./.derivedData` both reported
+**BUILD SUCCEEDED**; `git diff --check` was clean. The tracked-file credential-pattern,
+personal-path, network-code, and runtime-artifact scans were clean. Xcode emitted only its existing
+multiple-destination note and AppIntents metadata-skipped warning. The packaged ZIP, extracted-app
+inspection, fresh-copy smoke test, tag, and GitHub publication were not yet verified.
+
+**Next step.** Commit and push the intended release diff, package the exact commit as
+`dist/VibeMenu-v1.0-macos-arm64.zip`, complete the release inspection and owner-visible smoke test,
+then tag and publish only if every release gate passes.

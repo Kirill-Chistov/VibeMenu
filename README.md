@@ -5,16 +5,17 @@
 <p align="center"><strong>Keeps your Mac awake while a coding agent is working, and tells you when one needs you.</strong></p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/source-v0.3-blue" alt="Source: v0.3">
+  <img src="https://img.shields.io/badge/source-v1.0-blue" alt="Source: v1.0">
   <img src="https://img.shields.io/badge/platform-macOS%2015%2B%20(Apple%20Silicon)-blue" alt="Platform: macOS 15+ (Apple Silicon)">
   <img src="https://img.shields.io/badge/license-Apache--2.0-green" alt="License: Apache-2.0">
   <img src="https://img.shields.io/badge/build-unsigned-orange" alt="Build: unsigned">
 </p>
 
-VibeMenu is a lightweight, local-first macOS menu-bar app — a **power-and-attention layer
-for Mac-based coding agents**. It holds a macOS power assertion while Claude Code or a Codex
-Desktop session is actually working, releases it when the work finishes, and shows you which
-sessions are running, which are done, and which are blocked waiting for your approval.
+VibeMenu is a lightweight, local-only macOS menu-bar app — a **power-and-attention layer
+for Mac-based coding agents**. It holds a macOS power assertion while Claude Code or the
+ChatGPT desktop app's Work or Codex mode is actually working, releases it when the work
+finishes, and shows you which sessions are running, which are done, and which are blocked
+waiting for your approval.
 
 It answers three questions at a glance:
 
@@ -33,6 +34,7 @@ It answers three questions at a glance:
 - 🖥️ **For macOS 15+ on Apple Silicon.**
 - 🆓 **Free and open source** (Apache-2.0).
 - 🔒 **Local-only** — no telemetry, no network, no backend, no account. Never reads your prompts.
+- ⚡️ **Designed for low overhead** — bounded, cached metadata monitoring with no database or busy loop.
 
 > **Unsigned build.** VibeMenu is not code-signed or notarized. An Apple Developer ID is a
 > recurring cost, and while the project is validating whether anyone wants it, that cost isn't
@@ -44,32 +46,37 @@ It answers three questions at a glance:
 ## What it does
 
 - **Automatic keep-awake while an agent is working.** VibeMenu holds a power assertion while
-  Claude Code — or an active Codex Desktop session — is working, and releases it when the work
-  finishes. **For Claude with the optional hook**, a long silent phase (a build, a test run, a
+  Claude Code, ChatGPT Work, or Codex is working, and releases it when the work finishes. The
+  owners are independent and shown in this order: **Manual → Claude → Codex → ChatGPT Work**.
+  **For Claude with the optional hook**, a long silent phase (a build, a test run, a
   subagent/Task) keeps the Mac awake up to a bounded cap, so a quiet stretch doesn't drop the
   assertion mid-run; with no recent heartbeat — no hook, or one that stopped working — the hold
   falls back to a coarser form that covers only visibly active work. Codex has no equivalent hold
   — see [Limitations](#limitations).
 - **Truthful sleep-prevention status.** The menu shows whether VibeMenu *actually* holds the
-  assertion, who owns it (Manual / Claude / Codex), and when acquisition failed — rather than
-  just echoing your switch back at you.
+  assertion, who owns it (Manual / Claude / Codex / ChatGPT Work), and when acquisition failed —
+  rather than just echoing your switch back at you. Each owner can keep the shared assertion alive
+  independently, so one agent finishing does not release another agent's hold.
 - **One-click manual keep-awake.** Manual always wins and is never overridden by automation.
-- **Session Radar** — a shared **four-row** list of recent Claude Code and Codex Desktop sessions
-  with their state (working / quiet / waiting / done / stale), elapsed time, and a safe session name.
-  One centralized, provider-neutral **Recent sessions** expansion reveals additional rows. Rows can
-  be hidden; nothing is written to disk. *Claude rows come from the optional heartbeat hook* —
-  baseline detection has no per-session signal, and VibeMenu doesn't fabricate one.
+- **Session Radar** — a shared **four-row** list of recent Claude Code and opt-in ChatGPT Work/Codex
+  sessions with a conservative state, elapsed time, and a safe session name. Claude can show
+  working / quiet / waiting / done / stale; ChatGPT Work and Codex use active / idle / done / stale
+  states because they have no heartbeat. One centralized, provider-neutral **Recent sessions**
+  expansion reveals additional rows. Rows can be hidden; nothing is written to disk. *Claude rows
+  come from the optional heartbeat hook* — baseline detection has no per-session signal, and
+  VibeMenu doesn't fabricate one.
 - **Needs approval** *(Claude, opt-in hook)* — when Claude asks permission to run a tool, its row
   moves to the top and shows how long it's been blocked, and the **menu-bar icon turns orange** for a
   genuine approval request. Requires the optional heartbeat hook. See [the caveat below](#limitations).
 - **Attention notifications** *(Claude, opt-in)* — optional local notifications when a Claude session
   hits **Needs approval** or is **Done**, using your Mac's own notification, Focus, and sound settings.
   Nothing is sent anywhere.
-- **Usage limits** *(opt-in, experimental)* — your **real** Claude 5-hour/weekly usage (the same
-  figures as the in-app `/usage` view) and Codex's real rate-limit windows, read **locally** from
-  files those apps already wrote — **no network, no cookies, no API keys, no token estimation**.
-  Off by default. See [`decisions/0016`](docs/decisions/0016-claude-usage-limits.md) and
-  [`0017`](docs/decisions/0017-codex-session-support.md).
+- **Usage limits** *(opt-in)* — your **real** Claude 5-hour/weekly usage and ChatGPT's current
+  rate-limit windows, read **locally** from files those apps already wrote — **no network, no
+  cookies, no API keys, no token estimation**. ChatGPT Work and Codex share one allowance, and
+  limits never affect sleep prevention. Both sections are off by default and show an honest
+  unavailable state when no local reading exists. See [`decisions/0016`](docs/decisions/0016-claude-usage-limits.md)
+  and [`0017`](docs/decisions/0017-codex-session-support.md).
 - **Stays out of the way** — menu-bar only (no Dock icon), optional Launch at Login, no network.
 
 ## Why not just use `caffeinate`?
@@ -140,14 +147,14 @@ including exactly which fields each parser reads.
   arrives — so approving clears the row on the next event, not the instant you click Allow.
   Denying is worse: Claude Desktop fires **no hook event on deny**, so a denied row can linger
   until that session's next event (or the 30-minute prune).
-- **Codex support is Desktop-only and read-only.** Codex **CLI** sessions are ignored. Codex
-  usage limits never affect sleep prevention.
+- **ChatGPT Work/Codex support is desktop-only and read-only.** CLI sessions are ignored. Usage
+  limits never affect sleep prevention.
 - **No quiet-work hold for Codex.** Codex exposes no per-session heartbeat, so VibeMenu can't
   tell "silent mid-build" from "finished". A Codex session holds sleep prevention only while it
   looks actively working; once it's quiet for about a minute, the hold drops. The 15-minute
   quiet-work hold is **Claude-only**. For a long silent Codex phase, use the manual switch.
 - **Opt-in sources read other apps' private files.** The Claude Desktop cache/title index and
-  Codex's rollout files are undocumented formats. They're best-effort: if a vendor changes the
+  ChatGPT's rollout files are undocumented formats. They're best-effort: if a vendor changes the
   format, VibeMenu shows nothing rather than guessing.
 - **No clamshell / lid-closed support.** Closing the lid can still sleep the Mac.
 - **Does not prevent display sleep.** VibeMenu keeps the *system* awake, not the screen.
@@ -155,14 +162,16 @@ including exactly which fields each parser reads.
   *state* (Nominal / Fair / Serious / Critical), not degrees or RPM.
 - **During long quiet work a Claude row may read *Quiet* while sleep prevention stays
   active.** That's the bounded quiet-work hold doing its job.
+- **No universal battery-life promise.** Monitoring is designed to be low overhead, but actual
+  energy use varies by Mac, OS state, and which optional sources are enabled.
 
 More detail in [docs/FAQ.md](docs/FAQ.md).
 
 ## Feedback
 
-VibeMenu does what it set out to do, so it's now in **maintenance mode**: active feature development
-is paused, and what gets fixed or explored next depends on real user demand. Bug reports and feedback
-are how you shape that.
+VibeMenu v1.0 is **feature-complete and in maintenance mode**: active feature development is paused,
+and what gets fixed or explored next depends on real user demand. Bug reports and feedback are how
+you shape that.
 
 - **Bugs & feature requests →** [GitHub Issues](../../issues)
 - **Questions & ideas →** [GitHub Discussions](../../discussions)
@@ -185,7 +194,7 @@ xcodebuild -project App/VibeMenu.xcodeproj -scheme VibeMenu -configuration Debug
   -derivedDataPath ./.derivedData build
 
 # Package a release zip (unsigned, no notarization, no DMG)
-scripts/package-github-release.sh 0.3   # → dist/VibeMenu-v0.3-macos-arm64.zip
+scripts/package-github-release.sh 1.0   # → dist/VibeMenu-v1.0-macos-arm64.zip
 ```
 
 The built app is at `build/DerivedData/Build/Products/Release/VibeMenu.app` after packaging, or
