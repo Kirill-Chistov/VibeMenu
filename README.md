@@ -37,7 +37,7 @@ Optionally show locally available Claude and ChatGPT usage-limit windows in the 
 The menu reports the real sleep assertion and its active owners in a fixed order: **Manual → Claude → Codex → ChatGPT Work**. An optional thermal row shows macOS's coarse thermal state so you can see when the system is under pressure.
 
 <p align="center">
-  <img src="docs/assets/vibemenu-menu.png" alt="VibeMenu menu showing Claude limits, recent Claude and Codex sessions, and Codex-owned sleep prevention" width="520">
+  <img src="docs/assets/vibemenu-menu.png" alt="VibeMenu menu showing Claude limits, an active Claude session, and Claude-owned sleep prevention" width="520">
 </p>
 
 ## Local by design
@@ -47,7 +47,7 @@ Everything stays on your Mac. VibeMenu has no account, backend, telemetry, analy
 Optional session and usage features read a narrow allowlist of locally available metadata and fail closed when a trustworthy value is unavailable. See the full [privacy model](docs/PRIVACY.md).
 
 <p align="center">
-  <img src="docs/assets/vibemenu-settings.png" alt="VibeMenu Settings with controls for launch at login, notifications, thermal status, session rows, Claude, and ChatGPT" width="680">
+  <img src="docs/assets/vibemenu-settings.png" alt="VibeMenu Settings with controls for launch at login, notifications, thermal status, session rows, Claude, and ChatGPT" width="480">
 </p>
 
 ## Install

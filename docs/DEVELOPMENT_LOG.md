@@ -4746,3 +4746,18 @@ build or tests were run because only Markdown and public image assets changed, a
 code, dependency, product behavior, network/privacy boundary, `CLAUDE.md`, or separate repository was
 changed. Recommended next step: review the README on GitHub after publication to confirm the final
 desktop and mobile visual balance.
+
+## 2026-08-03 — Refresh README menu capture and rebalance Settings image
+
+Replaced `docs/assets/vibemenu-menu.png` with the latest direct owner-supplied menu capture
+(`Screenshot 2026-08-03 at 10.18.47.png`), re-encoded without source metadata. Updated its README
+alt text to match the visible Claude limits, active Claude session, and Claude-owned sleep assertion.
+Reduced the Settings image's README render width from 680 to 480 pixels while keeping the asset
+itself unchanged. The README structure, copy, and animated demo were otherwise untouched.
+
+**Validation.** Confirmed all four README image paths resolve; inspected the replacement menu image;
+confirmed the menu renders at 520 pixels and Settings at 480 pixels; and verified the demo GIF retained
+SHA-256 `3ae28b5a1704888cfbaeb81d0d77e7308836533c52396acc956805df7501128f`.
+`git diff --check` passed before this entry and was rerun for the final handoff. No Swift build or tests
+were run because this change affects only README presentation and a public image asset. No errors were
+encountered. Recommended next step: confirm the relative screenshot balance in GitHub's rendered README.
