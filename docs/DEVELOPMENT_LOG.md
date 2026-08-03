@@ -4711,3 +4711,38 @@ inspection, fresh-copy smoke test, tag, and GitHub publication were not yet veri
 **Next step.** Commit and push the intended release diff, package the exact commit as
 `dist/VibeMenu-v1.0-macos-arm64.zip`, complete the release inspection and owner-visible smoke test,
 then tag and publish only if every release gate passes.
+
+## 2026-08-03 — Rewrite README as the v1.0 product landing page
+
+Replaced the engineering-heavy primary README with a concise product-first page covering automatic
+sleep prevention and release, Session Radar, optional local usage limits, Claude attention
+notifications, truthful assertion ownership, thermal state, privacy, installation, supported agents,
+requirements, limitations, source builds, and licensing. The README keeps the unsigned and
+not-notarized warning prominent, explicitly excludes Codex CLI and closed-lid operation, and uses
+conservative language rather than promising perfect agent detection. Detailed implementation and
+setup material remains available through the existing public documentation links.
+
+Replaced the stale menu image with the supplied current menu capture, added the supplied Settings
+capture, and optimized the existing README logo from 1.1 MB to 45 KB at its displayed scale. The
+supplied full-screen recording and GIF exposed surrounding private runtime information, so neither
+original was copied. Instead, the public demo is a tightly cropped, metadata-stripped derivative that
+shows only VibeMenu's menu-bar behavior; it was trimmed to about 9.1 seconds, reduced to 700 × 359 at
+about 6 fps, quantized to a stable 128-color palette, and reduced to 215 KB. The static captures were
+also re-encoded without source metadata.
+
+**Validation.** Inspected representative frames across both supplied recording formats and across the
+final animation, plus both supplied screenshots and the logo. A path checker confirmed every relative
+README image and document link exists. A content checklist confirmed every requested product,
+privacy, platform, distribution, and limitation statement. Pillow reported the final asset as an
+animated GIF with 42 encoded frames and a 9.1-second duration; `file` identified it as GIF89a. A
+targeted private-string scan was clean. `gh release view v1.0 --repo Kirill-Chistov/VibeMenu` confirmed
+the repository, release tag, and `VibeMenu-v1.0-macos-arm64.zip` asset URL. `git diff --check` was clean
+both before and after this log entry.
+
+The host did not provide `ffmpeg`, `ffprobe`, ImageMagick, or gifsicle. The already supplied GIF version
+of the inspected recording was therefore cropped and optimized with the bundled Pillow runtime. One
+read-only checklist invocation had a Python quoting error; the corrected invocation passed. No Swift
+build or tests were run because only Markdown and public image assets changed, as requested. No source
+code, dependency, product behavior, network/privacy boundary, `CLAUDE.md`, or separate repository was
+changed. Recommended next step: review the README on GitHub after publication to confirm the final
+desktop and mobile visual balance.
